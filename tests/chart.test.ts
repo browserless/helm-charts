@@ -101,9 +101,14 @@ test('replicas', () => {
   assert.deepEqual(kind(docs, 'Service').spec.selector, replicated.spec.selector.matchLabels, 'the Service selects every replica');
   assert.equal(replicated.spec.selector.matchLabels['app.kubernetes.io/instance'], 'alpha', 'and only pods of its own release');
   // A browser profile supports one browser at a time, so replicas must not share a volume.
+  // The schema rejects it, also for helm lint, which ignores the template's fail;
+  // the template guard covers installs that skip schema validation.
   for (const replicaCount of [2, 3]) {
-    const { err, ok } = helm('template', 'alpha', chart, '-f', valuesFile({ replicaCount, persistence: { existingClaim: 'data' } }));
-    assert.ok(!ok && err.includes('replicaCount above 1 cannot be combined with persistence.existingClaim'), `replicaCount ${replicaCount} with a claim must fail: ${err}`);
+    const values = valuesFile({ replicaCount, persistence: { existingClaim: 'data' } });
+    const lint = helm('lint', chart, '-f', values);
+    assert.ok(!lint.ok && (lint.out + lint.err).includes("'/persistence/existingClaim'"), `lint must reject replicaCount ${replicaCount} with a claim: ${lint.out}${lint.err}`);
+    const guard = helm('template', 'alpha', chart, '--skip-schema-validation', '-f', values);
+    assert.ok(!guard.ok && guard.err.includes('replicaCount above 1 cannot be combined with persistence.existingClaim'), `the template must reject replicaCount ${replicaCount} with a claim: ${guard.err}`);
   }
   const single = kind(render('alpha', { replicaCount: 1, persistence: { existingClaim: 'data' } }), 'Deployment');
   assert.equal(single.spec.replicas, 1, 'one replica may use a claim');

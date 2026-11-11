@@ -14,15 +14,20 @@ names in [`values.yaml`](charts/browserless/values.yaml); the chart's
 > yet, so the install step below does not work yet; use
 > [Install from a checkout](#install-from-a-checkout) for that step instead.
 
-Needs Helm 4, kubectl with access to a cluster, OpenSSL and curl. Create a
+Needs Helm 4, kubectl with access to a cluster, OpenSSL and curl. Create a new
 namespace and a Secret holding a random token:
 
 ```sh
-kubectl create namespace browserless
-token=$(openssl rand -hex 24) && [ -n "$token" ] && printf %s "$token" |
+token=$(openssl rand -hex 24) && [ -n "$token" ] &&
+  kubectl create namespace browserless &&
+  printf %s "$token" |
   kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=/dev/stdin
 unset token
 ```
+
+This stops at the first step that fails. If the namespace `browserless` already
+exists, it creates nothing: use another namespace name in every command here
+instead, so that the quick start and its removal touch only what it created.
 
 Install the chart:
 
@@ -68,8 +73,8 @@ helm uninstall browserless --namespace browserless
 kubectl -n browserless delete secret browserless-token
 ```
 
-If you created the `browserless` namespace only for this, also run
-`kubectl delete namespace browserless`.
+The quick start created the namespace `browserless`; once nothing else uses it,
+also run `kubectl delete namespace browserless`.
 
 Keep real tokens in a secret manager or a protected file, never in Helm values
 or source control; the chart only reads the Secret and creates none. The token

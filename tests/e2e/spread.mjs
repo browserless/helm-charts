@@ -19,7 +19,8 @@ const out = { pods: pods.length, requests: [], sessions: [] };
 const fail = (e) => { out.error = String(e.message ?? e); console.log(JSON.stringify(out)); process.exit(1); };
 
 const held = () => Promise.all(pods.map(async (ip) => {
-  const { pressure } = await (await fetch(`http://${ip}:3000/pressure`, { headers: auth })).json();
+  const res = await fetch(`http://${ip}:3000/pressure`, { headers: auth, signal: AbortSignal.timeout(5000) });
+  const { pressure } = await res.json();
   return pressure.running + pressure.queued;
 }));
 // Waits until the pods hold `total` sessions in all; returns the count per pod.
@@ -34,10 +35,11 @@ async function settle(total) {
 }
 
 // agent: false opens a new connection for the request and closes it afterwards.
+// The signal fails a request that gets no complete answer within 30 s.
 const content = (marker) => new Promise((resolve, reject) => {
   const body = JSON.stringify({ html: `<p id=m>${marker}</p>`, waitForTimeout: 3000 });
   const req = http.request(`${SERVICE}/chromium/content`, {
-    method: 'POST', agent: false,
+    method: 'POST', agent: false, signal: AbortSignal.timeout(30000),
     headers: { ...auth, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
   }, (res) => {
     let text = '';
@@ -65,8 +67,9 @@ function session(n) {
     ws.send(JSON.stringify({ id: i, method }));
   });
   return new Promise((resolve, reject) => {
-    ws.onopen = () => resolve(ws);
-    ws.onerror = () => reject(new Error(`session ${n}: websocket error`));
+    const timer = setTimeout(() => { ws.close(); reject(new Error(`session ${n}: not open after 15 s`)); }, 15000);
+    ws.onopen = () => { clearTimeout(timer); resolve(ws); };
+    ws.onerror = () => { clearTimeout(timer); reject(new Error(`session ${n}: websocket error`)); };
   });
 }
 

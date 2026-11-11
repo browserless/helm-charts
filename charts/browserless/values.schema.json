@@ -11,6 +11,8 @@
     ]},
     "resourceList": {"type": "object", "additionalProperties": false, "properties": {"cpu": {"$ref": "#/definitions/quantity"}, "memory": {"$ref": "#/definitions/quantity"}, "ephemeral-storage": {"$ref": "#/definitions/quantity"}}}
   },
+  "if": {"required": ["replicaCount"], "properties": {"replicaCount": {"minimum": 2}}},
+  "then": {"properties": {"persistence": {"properties": {"existingClaim": {"const": ""}}}}},
   "properties": {
     "global": {"type": "object"},
     "replicaCount": {"type": "integer", "minimum": 1},
