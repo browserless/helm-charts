@@ -16,6 +16,7 @@ for a published version, install its verified digest instead (see
 
 ```sh
 git clone https://github.com/browserless/helm-charts.git && cd helm-charts
+rm -f token.txt port-forward.log
 (umask 077 && openssl rand -hex 24 | tr -d '\n' > token.txt)
 kubectl create namespace browserless
 kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=token.txt
@@ -32,12 +33,14 @@ printf 'Authorization: Bearer %s\n' "$(cat token.txt)" |
 ```
 
 The request returns the page as Chromium rendered it, with `<p id="answer">42</p>`.
-`token.txt` holds a random token that only you can read. The port-forward runs
-in the background of this shell and listens only on 127.0.0.1; the request is
-sent only once kubectl reports that it is forwarding, so if port 3000 is already
-in use, kubectl prints an error and nothing is sent. curl reads the token header
-from standard input, so the token is not in its command line, which other users
-of the machine can list. To remove everything, from the same shell:
+`rm` clears files left by an earlier run, so `token.txt` is new and holds a
+random token that only you can read, and the log shows only this port-forward.
+The port-forward runs in the background of this shell and listens only on
+127.0.0.1; the request is sent only once kubectl reports that it is forwarding,
+so if port 3000 is already in use, kubectl prints an error and nothing is sent.
+curl reads the token header from standard input, so the token is not in its
+command line, which other users of the machine can list. To remove everything,
+from the same shell:
 
 ```sh
 kill "$PF"
