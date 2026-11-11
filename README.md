@@ -16,27 +16,33 @@ for a published version, install its verified digest instead (see
 
 ```sh
 git clone https://github.com/browserless/helm-charts.git && cd helm-charts
-(umask 077 && openssl rand -hex 24 | tr -d '\n' > token.txt)   # random token, readable only by you
+(umask 077 && openssl rand -hex 24 | tr -d '\n' > token.txt)
 kubectl create namespace browserless
 kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=token.txt
 helm install browserless ./charts/browserless --namespace browserless \
   --set token.existingSecret=browserless-token --wait --timeout 10m
-kubectl -n browserless port-forward service/browserless-browserless 3000:3000 >/dev/null & PF=$!; sleep 2
+kubectl -n browserless port-forward --address 127.0.0.1 \
+  service/browserless-browserless 3000:3000 > port-forward.log & PF=$!
+until grep -qs Forwarding port-forward.log || ! kill -0 "$PF" 2>/dev/null; do sleep 1; done
+grep -q Forwarding port-forward.log &&
 printf 'Authorization: Bearer %s\n' "$(cat token.txt)" |
-  curl -sS --retry 5 --retry-connrefused -H @- -H 'Content-Type: application/json' \
+  curl -sS -H @- -H 'Content-Type: application/json' \
   -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}' \
-  http://localhost:3000/chromium/content
+  http://127.0.0.1:3000/chromium/content
 ```
 
 The request returns the page as Chromium rendered it, with `<p id="answer">42</p>`.
-curl reads the token header from standard input, so the token is not in its
-command line, which other users of the machine can list. The port-forward runs
-in the background of this shell; to remove everything, from the same shell:
+`token.txt` holds a random token that only you can read. The port-forward runs
+in the background of this shell and listens only on 127.0.0.1; the request is
+sent only once kubectl reports that it is forwarding, so if port 3000 is already
+in use, kubectl prints an error and nothing is sent. curl reads the token header
+from standard input, so the token is not in its command line, which other users
+of the machine can list. To remove everything, from the same shell:
 
 ```sh
 kill "$PF"
 helm uninstall browserless --namespace browserless
-kubectl delete namespace browserless && rm token.txt
+kubectl delete namespace browserless && rm token.txt port-forward.log
 ```
 
 Keep real tokens in a secret manager or a protected file, never in Helm values
