@@ -9,56 +9,66 @@ names in [`values.yaml`](charts/browserless/values.yaml); the chart's
 
 ## Quick start
 
-Needs Helm 4, kubectl with access to a cluster, git, OpenSSL and curl. Until a
-chart version is published, install from a clone of this repository as below;
-for a published version, install its verified digest instead (see
-[Releases](#releases)).
+> **Available after the first release.** No chart version has been published
+> yet, so the install step below does not work yet; use
+> [Install from a checkout](#install-from-a-checkout) for that step instead.
+
+Needs Helm 4, kubectl with access to a cluster, OpenSSL and curl. Create a
+namespace and a Secret holding a random token:
 
 ```sh
-git clone https://github.com/browserless/helm-charts.git && (
-  cd helm-charts && umask 077 &&
-  token=$(openssl rand -hex 24) && [ -n "$token" ] && printf %s "$token" > token.txt &&
-  kubectl create namespace browserless &&
-  kubectl label namespace browserless browserless.io/quickstart=true &&
-  kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=token.txt &&
-  helm install browserless ./charts/browserless --namespace browserless \
-    --set token.existingSecret=browserless-token --wait --timeout 10m || exit
-  kubectl -n browserless port-forward --address 127.0.0.1 \
-    service/browserless-browserless 3000:3000 > port-forward.log & pf=$!
-  trap 'kill "$pf" 2>/dev/null' EXIT
-  until grep -qs Forwarding port-forward.log || ! kill -0 "$pf" 2>/dev/null; do sleep 1; done
-  grep -q Forwarding port-forward.log &&
-    printf 'Authorization: Bearer %s\n' "$token" |
-    curl -fsS -H @- -H 'Content-Type: application/json' \
-      -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}' \
-      http://127.0.0.1:3000/chromium/content
-)
+kubectl create namespace browserless
+token=$(openssl rand -hex 24) && [ -n "$token" ] && printf %s "$token" |
+  kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=/dev/stdin
+unset token
 ```
 
-The request returns the page as Chromium rendered it, with `<p id="answer">42</p>`.
-The commands run in a subshell, so your shell's directory and variables do not
-change, and they stop at the first step that fails. They clone into
-`./helm-charts` (git stops if it already exists) and save the token, readable
-only by you, in `helm-charts/token.txt`. The port-forward listens only on
-127.0.0.1 and stops when the commands finish; the request is sent only once
-kubectl reports that it is forwarding, so if port 3000 is already in use,
-nothing is sent. curl reads the token header from standard input, so the token
-is not in its command line, which other users of the machine can list.
-
-In the cluster, the quick start creates the namespace `browserless`, labelled
-`browserless.io/quickstart=true`, with the Secret `browserless-token` and the
-Helm release `browserless` in it; it stops if that namespace already exists. To
-reach Browserless again, run `kubectl -n browserless port-forward
-service/browserless-browserless 3000:3000` and send the token from
-`helm-charts/token.txt`. To remove what the quick start created in the
-cluster (only namespaces with that label, so never a `browserless` namespace of
-your own):
+Install the chart:
 
 ```sh
-kubectl delete namespace --selector browserless.io/quickstart=true
+helm install browserless oci://ghcr.io/browserless/charts/browserless \
+  --namespace browserless --set token.existingSecret=browserless-token \
+  --wait --timeout 10m
 ```
 
-Delete the `helm-charts` directory when you no longer need the token.
+This installs the newest published version; add `--version` to choose one. For
+production, verify the chart and install it by digest (see [Releases](#releases)).
+
+In one terminal, forward a local port to the Service and leave it running:
+
+```sh
+kubectl -n browserless port-forward --address 127.0.0.1 \
+  service/browserless-browserless 3000:3000
+```
+
+If it stops because port 3000 is in use, do not send the request: whatever
+listens there would receive the token. Use another local port instead, such as
+`3001:3000`, in the port-forward and in the request's URL.
+
+In a second terminal, have Chromium render a page:
+
+```sh
+kubectl -n browserless get secret browserless-token \
+  -o go-template='Authorization: Bearer {{.data.TOKEN | base64decode}}' |
+  curl -fsS -H @- -H 'Content-Type: application/json' \
+    -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}' \
+    http://127.0.0.1:3000/chromium/content
+```
+
+It prints the page as Chromium rendered it, with `<p id="answer">42</p>`. The
+token goes from the Secret straight to curl's standard input, so it is in no
+file and not in curl's command line, which other users of the machine can
+list. Without the token, Browserless answers 401 and curl reports an error.
+
+To remove it, stop the port-forward with Ctrl-C, then:
+
+```sh
+helm uninstall browserless --namespace browserless
+kubectl -n browserless delete secret browserless-token
+```
+
+If you created the `browserless` namespace only for this, also run
+`kubectl delete namespace browserless`.
 
 Keep real tokens in a secret manager or a protected file, never in Helm values
 or source control; the chart only reads the Secret and creates none. The token
@@ -68,6 +78,18 @@ cannot carry it. A missing Secret or key keeps the container from starting.
 `token.key` defaults to `TOKEN`. Rotating the token needs a pod restart. Release
 names must start with a lowercase letter and contain only lowercase letters,
 digits and `-`.
+
+### Install from a checkout
+
+Before the first release, or to try unreleased changes, create the Secret as
+above and install the chart from a clone instead:
+
+```sh
+git clone https://github.com/browserless/helm-charts.git
+helm install browserless ./helm-charts/charts/browserless \
+  --namespace browserless --set token.existingSecret=browserless-token \
+  --wait --timeout 10m
+```
 
 ## Configuration and limits
 
@@ -124,6 +146,8 @@ Readiness runs Node in the container against authenticated `/pressure` with
 either way). Startup and liveness only check TCP, so load takes the pod out of
 the Service instead of restarting it; with one replica, clients must retry while
 it has no ready endpoint.
+A port-forward connects to the pod even while it is not ready; check the
+Service's EndpointSlices to see whether it routes to the pod.
 
 ## Compatibility
 
@@ -292,23 +316,3 @@ check does not run again for it, which is why branch protection requires only
 workflow adds it again. A node image that the pinned kind release cannot start
 fails CI until kind is updated. Not covered: the Node.js patch release, and the
 runner's ShellCheck, jq, OpenSSL and Docker; kubectl runs inside the kind node.
-
-## Smoke test after installation
-
-With the port-forward running:
-
-```sh
-TOKEN="$(cat token.txt)"
-curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:3000/pressure   # 401
-curl -i -H "Authorization: Bearer $TOKEN" -H 'Accept: text/plain' \
-  http://localhost:3000/pressure                                           # 200 when idle
-curl --fail-with-body -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data '{"html":"<html><body><h1>Browserless works</h1></body></html>"}' \
-  http://localhost:3000/screenshot -o /tmp/browserless-smoke.png
-file /tmp/browserless-smoke.png
-unset TOKEN
-```
-
-A port-forward connects to the pod directly; check EndpointSlices to see the
-Service's endpoints.
