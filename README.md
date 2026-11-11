@@ -21,18 +21,20 @@ kubectl create namespace browserless
 kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=token.txt
 helm install browserless ./charts/browserless --namespace browserless \
   --set token.existingSecret=browserless-token --wait --timeout 10m
-kubectl -n browserless port-forward service/browserless-browserless 3000:3000 >/dev/null & sleep 2
-curl -sS --retry 5 --retry-connrefused http://localhost:3000/chromium/content \
-  -H "Authorization: Bearer $(cat token.txt)" -H 'Content-Type: application/json' \
-  -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}'
+kubectl -n browserless port-forward service/browserless-browserless 3000:3000 >/dev/null & PF=$!; sleep 2
+printf 'Authorization: Bearer %s\n' "$(cat token.txt)" |
+  curl -sS --retry 5 --retry-connrefused -H @- -H 'Content-Type: application/json' \
+  -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}' \
+  http://localhost:3000/chromium/content
 ```
 
 The request returns the page as Chromium rendered it, with `<p id="answer">42</p>`.
-The port-forward runs in the background of this shell (or run it in another
-terminal). To remove everything:
+curl reads the token header from standard input, so the token is not in its
+command line, which other users of the machine can list. The port-forward runs
+in the background of this shell; to remove everything, from the same shell:
 
 ```sh
-kill %1
+kill "$PF"
 helm uninstall browserless --namespace browserless
 kubectl delete namespace browserless && rm token.txt
 ```
