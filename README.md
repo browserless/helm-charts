@@ -51,9 +51,11 @@ dependency.
   `--user-data-dir=/data/<profile>`. The default `fsGroup: 999` makes most block
   volumes writable by the browser user. Volumes that ignore `fsGroup` (hostPath,
   many NFS and some CSI drivers) must already be writable by UID 999, or the
-  container exits 2 instead of silently losing profiles. One profile supports
-  one browser at a time, and a browser killed abruptly leaves `Singleton*` lock
-  files that a replacement pod cannot get past until they are removed.
+  container exits 2 instead of silently losing profiles. Do not mount it over
+  the application, home, temporary or shared-memory paths (`/usr/src/app`,
+  `/home/blessuser`, `/tmp`, `/dev/shm`). One profile supports one browser at a
+  time, and a browser killed abruptly leaves `Singleton*` lock files that a
+  replacement pod cannot get past until they are removed.
 - **Cookies:** in tests, cookies changed less than about 30 s before a session
   ended were missing from the profile afterwards (Chromium writes them on a
   timer), so keep a session open at least 30 s after changes that must
@@ -67,9 +69,13 @@ dependency.
 - **Updates:** exactly one replica with Recreate updates, so every upgrade
   interrupts service and can end active sessions, and a failed upgrade (for
   example an unpullable image) leaves no ready pod until a rollback. Check that a
-  new image exists for your nodes' architecture first. There is no draining,
-  autoscaling, Ingress, TLS or NetworkPolicy, and no claim of high availability
-  or tenant isolation.
+  new image exists for your nodes' architecture first. Upgrade with all your
+  values every time, for example the same values file (`-f`): an upgrade that
+  passes any `--set` or `-f` resets every value it omits to the chart default,
+  so one that sets only the token Secret drops `persistence.existingClaim`. A
+  values file that sets `image.digest` or `image.tag` keeps that image across
+  chart upgrades. There is no draining, autoscaling, Ingress, TLS or
+  NetworkPolicy, and no claim of high availability or tenant isolation.
 
 ## Probes
 
@@ -105,8 +111,8 @@ permissions, admission policies, image pulls and the upgrade interruption.
 
 ## Development
 
-Needs Node.js (the major version in [`.nvmrc`](.nvmrc)), Docker, jq, OpenSSL and
-ShellCheck:
+Needs Node.js 24.3 or later (CI uses the latest release of the major version in
+[`.nvmrc`](.nvmrc)), Docker, jq, OpenSSL and ShellCheck:
 
 ```sh
 npm ci
@@ -125,7 +131,8 @@ reproducibility, use as a dependency) and the tool installer's tests. Node runs
 the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
 are third-party code, so jobs that can push, publish, sign or read an
 environment's secrets install none and run only scripts that import Node
-built-ins; the tests enforce this.
+built-ins. A chart test checks the common ways this could regress; it is not a
+complete security analysis of the workflows.
 
 `tests/e2e/kind.sh` (the CI `e2e` jobs) installs the working tree on a
 disposable kind cluster under the restricted Pod Security Standard and checks

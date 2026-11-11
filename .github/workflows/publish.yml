@@ -33,11 +33,16 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: refs/tags/${{ github.event.release.tag_name }}
           persist-credentials: false
+      # Recorded before any npm code runs; the publish job checks out this commit.
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
@@ -63,9 +68,11 @@ jobs:
       id-token: write # Sigstore signing certificate for the attestation
       attestations: write
     steps:
+      # The commit the verify job tested. publish-chart.sh refuses unless the
+      # release tag still points to it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ github.event.release.tag_name }}
+          ref: ${{ needs.verify.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
       # Node runs only scripts that import nothing but Node built-ins.

@@ -261,11 +261,14 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   for (const file of readdirSync(dir)) {
     const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
     for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
-      if (!job.environment && !Object.values(job.permissions ?? workflow.permissions ?? {}).includes('write')) continue;
+      // No permissions key means the token's default permissions.
+      const permissions = job.permissions ?? workflow.permissions;
+      const writes = permissions === undefined || permissions === 'write-all' || Object.values(permissions).includes('write');
+      if (!job.environment && !writes) continue;
       const where = `${file} ${id}`;
       privileged.push(where);
       for (const { run = '' } of job.steps) {
-        assert.doesNotMatch(run, /\bnpm\b/, `${where} runs npm`);
+        assert.doesNotMatch(run, /\b(npm|npx|pnpm|yarn|corepack)\b/, `${where} runs a package manager`);
         for (const [, script] of run.matchAll(/\b(scripts\/[\w-]+\.ts)\b/g)) builtinsOnly(script ?? '', where);
         for (const [, shell] of run.matchAll(/\b(scripts\/[\w-]+\.sh)\b/g)) {
           for (const [, script] of readFileSync(join(root, shell ?? ''), 'utf8').matchAll(/\b(scripts\/[\w-]+\.ts)\b/g)) {
@@ -280,6 +283,9 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
     'publish.yml publish',
     'release-please.yml release-please',
   ]);
+  // The publishing job publishes the commit the read-only verify job tested.
+  const publish = readYaml('.github/workflows/publish.yml');
+  assert.equal(publish.jobs.publish.steps[0].with.ref, '${{ needs.verify.outputs.commit }}');
 });
 
 test('every workflow job runs on an Ubuntu 26.04 runner', () => {

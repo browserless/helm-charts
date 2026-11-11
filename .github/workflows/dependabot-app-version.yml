@@ -72,6 +72,7 @@ jobs:
         # fast-forward of that commit; if Dependabot has updated the branch
         # since, it is rejected and the newer commit's run syncs it.
         run: |
+          set -f # split UPDATES on whitespace without expanding file names
           for update in $UPDATES; do
             chart=${update%%=*} version=${update#*=}
             if ! [[ $chart =~ ^[a-z0-9][a-z0-9-]*$ && $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
