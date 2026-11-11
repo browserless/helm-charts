@@ -7,27 +7,44 @@ default image is the `ghcr.io/browserless/chromium` release that `image.tag`
 names in [`values.yaml`](charts/browserless/values.yaml); the chart's
 `appVersion` always names the same release.
 
-## Install
+## Quick start
 
-Create a Secret holding a strong token (from a secret manager or a protected
-file; not in Helm values or source control). `token.txt` holds only the token,
-without a trailing newline:
+Needs Helm 4, kubectl with access to a cluster, git, OpenSSL and curl. Until a
+chart version is published, install from a clone of this repository as below;
+for a published version, install its verified digest instead (see
+[Releases](#releases)).
 
 ```sh
+git clone https://github.com/browserless/helm-charts.git && cd helm-charts
+(umask 077 && openssl rand -hex 24 | tr -d '\n' > token.txt)   # random token, readable only by you
 kubectl create namespace browserless
 kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=token.txt
-helm upgrade --install browserless ./charts/browserless \
-  --namespace browserless --set token.existingSecret=browserless-token \
-  --wait --timeout 10m
-kubectl -n browserless port-forward service/browserless-browserless 3000:3000
+helm install browserless ./charts/browserless --namespace browserless \
+  --set token.existingSecret=browserless-token --wait --timeout 10m
+kubectl -n browserless port-forward service/browserless-browserless 3000:3000 >/dev/null & sleep 2
+curl -sS --retry 5 --retry-connrefused http://localhost:3000/chromium/content \
+  -H "Authorization: Bearer $(cat token.txt)" -H 'Content-Type: application/json' \
+  -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}'
 ```
 
-The chart creates no Secret. The token must be nonempty printable ASCII without
-whitespace; otherwise the container exits 2 before starting, because Bearer
-authentication and the readiness probe cannot carry it. A missing Secret or key
-keeps the container from starting. `token.key` defaults to `TOKEN`. Rotating the
-token needs a pod restart. Release names must start with a lowercase letter and
-contain only lowercase letters, digits and `-`.
+The request returns the page as Chromium rendered it, with `<p id="answer">42</p>`.
+The port-forward runs in the background of this shell (or run it in another
+terminal). To remove everything:
+
+```sh
+kill %1
+helm uninstall browserless --namespace browserless
+kubectl delete namespace browserless && rm token.txt
+```
+
+Keep real tokens in a secret manager or a protected file, never in Helm values
+or source control; the chart only reads the Secret and creates none. The token
+must be nonempty printable ASCII without whitespace; otherwise the container
+exits 2 before starting, because Bearer authentication and the readiness probe
+cannot carry it. A missing Secret or key keeps the container from starting.
+`token.key` defaults to `TOKEN`. Rotating the token needs a pod restart. Release
+names must start with a lowercase letter and contain only lowercase letters,
+digits and `-`.
 
 ## Configuration and limits
 

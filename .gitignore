@@ -1,3 +1,4 @@
 /.bin/
 /node_modules/
 /tests/e2e/out/
+/token.txt
