@@ -44,21 +44,18 @@ export function lockedVersions(goMod: string): Record<Tool, string> {
   const requirements = goMod
     .split('\n')
     .map((line) => line.replace(/\/\/.*/, '').trim().replace(/^require\s+/, '').split(/\s+/));
-  const versions: Partial<Record<Tool, string>> = {};
-  for (const [tool, module] of Object.entries(modules)) {
+  const required = (module: string): string => {
     const found = requirements.filter(([path]) => path === module);
-    const [requirement] = found;
-    if (found.length !== 1 || !requirement || requirement.length !== 2) {
+    const [path, version, ...rest] = found[0] ?? [];
+    if (found.length !== 1 || !path || !version || rest.length) {
       throw new Error(`tools/go.mod must require ${module} exactly once, with one version`);
     }
-    const version = requirement[1] ?? '';
     if (!/^v\d+\.\d+\.\d+$/.test(version)) throw new Error(`${module} ${version} is not a release version`);
-    if (isTool(tool)) versions[tool] = version;
-  }
-  const { helm, kind, actionlint } = versions;
-  if (!helm || !kind || !actionlint) throw new Error('tools/go.mod is missing a tool');
-  if (!helm.startsWith('v4.')) throw new Error(`the chart and its tests require Helm 4, not ${helm}`);
-  return { helm, kind, actionlint };
+    return version;
+  };
+  const versions = { helm: required(modules.helm), kind: required(modules.kind), actionlint: required(modules.actionlint) };
+  if (!versions.helm.startsWith('v4.')) throw new Error(`the chart and its tests require Helm 4, not ${versions.helm}`);
+  return versions;
 }
 
 export function platform(os: string = process.platform, arch: string = process.arch): Platform {
