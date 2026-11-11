@@ -276,7 +276,38 @@ hits=$(token_hits "$(pod main)")
 [ "$hits" = 0 ] || fail "token appears $hits times in the pod log"
 pass "token occurrences in the pod log: 0"
 
-# 7. Guards: unusable credentials and unwritable volumes stop the container.
+# 7. Replicas: the Service of a release selects only its own pods, and each new
+# connection reaches one of them. Scaling a release (1 -> 2 -> 1) without a
+# volume keeps a running pod; it promises nothing for sessions on removed pods.
+endpoint_pods() { k -n $NS get endpointslice -l "kubernetes.io/service-name=$1" -o json | jq -r '[.items[].endpoints[]?.targetRef.name] | sort | join(" ")'; }
+release_pods() { k -n $NS get pods -l "app.kubernetes.io/instance=$1" -o json | jq -r '[.items[].metadata.name] | sort | join(" ")'; }
+multi=(--set token.existingSecret=token --set concurrent=20)
+h -n $NS install multi "$CHART" "${multi[@]}" --wait --timeout 10m >> "$log" 2>&1 || fail "install multi"
+first=$(podjson multi | jq -r .metadata.uid)
+h -n $NS upgrade multi "$CHART" "${multi[@]}" --set replicaCount=2 --wait --timeout 10m >> "$log" 2>&1 || fail "upgrade multi to replicaCount=2"
+wait_ready_endpoints multi-browserless 2 60 || fail "multi-browserless has $(ready_endpoints multi-browserless) ready endpoints, expected 2"
+k -n $NS get pods -l app.kubernetes.io/instance=multi -o json |
+  jq -e --arg u "$first" '(.items | length) == 2 and any(.items[]; .metadata.uid == $u and .status.containerStatuses[0].restartCount == 0)' > /dev/null ||
+  fail "scaling to 2 replicas replaced or restarted the existing pod"
+[ "$(endpoint_pods multi-browserless)" = "$(release_pods multi)" ] || fail "multi-browserless endpoints $(endpoint_pods multi-browserless) are not the multi pods $(release_pods multi)"
+[ "$(endpoint_pods $svc)" = "$(release_pods main)" ] || fail "$svc endpoints $(endpoint_pods $svc) are not the main pods $(release_pods main)"
+pass "scaled 1 -> 2 keeping the running pod; each Service's endpoints are exactly its release's pods (main 1, multi 2)"
+ips=$(k -n $NS get pods -l app.kubernetes.io/instance=multi -o jsonpath='{.items[*].status.podIP}' | tr ' ' ,)
+in_pod main spread.mjs SERVICE=http://multi-browserless:3000 "PODS=$ips" > "$work/spread.json" || fail "replicas: $(cat "$work/spread.json")"
+jq -e '.answered == (.sessions | length) and .answeredAfterClose == (.sessions | length) - 1' "$work/spread.json" > /dev/null || fail "replica sessions: $(cat "$work/spread.json")"
+pass "through the Service, new connections reached both pods: stateless requests served by pods $(jq -c .requests "$work/spread.json"), WebSocket sessions on pods $(jq -c .sessions "$work/spread.json"); all answered, and still did after one was closed"
+kept=$(release_pods multi)
+h -n $NS upgrade multi "$CHART" "${multi[@]}" --wait --timeout 10m >> "$log" 2>&1 || fail "upgrade multi back to 1 replica"
+wait_single_pod multi || fail "more than one multi pod after scaling to 1"
+wait_ready_endpoints multi-browserless 1 60 || fail "multi-browserless has $(ready_endpoints multi-browserless) ready endpoints after scaling to 1"
+p=$(podjson multi)
+if ! grep -qw "$(jq -r .metadata.name <<< "$p")" <<< "$kept" || ! jq -e '.status.containerStatuses[0].restartCount == 0' <<< "$p" > /dev/null; then
+  fail "scaling to 1 replaced or restarted the remaining pod"
+fi
+in_pod main spread.mjs SERVICE=http://multi-browserless:3000 "PODS=$(jq -r .status.podIP <<< "$p")" > "$work/spread-1.json" || fail "after scaling to 1: $(cat "$work/spread-1.json")"
+pass "scaled 2 -> 1: one of the two pods remains, unrestarted, and serves a request and a session through the Service"
+
+# 8. Guards: unusable credentials and unwritable volumes stop the container.
 h -n $NS install empty "$CHART" --set token.existingSecret=empty-token >> "$log" 2>&1
 expect_guard empty 'TOKEN must be nonempty' "empty token"
 h -n $NS install non-ascii "$CHART" --set token.existingSecret=non-ascii-token >> "$log" 2>&1
@@ -311,8 +342,8 @@ for p in $(k -n $NS get pods -o name); do
 done
 pass "token occurrences in all current and previous container logs: 0"
 
-# 8. Uninstall removes the release's objects and leaves the user-owned PVC.
-for release in empty non-ascii missing readonly main; do
+# 9. Uninstall removes the release's objects and leaves the user-owned PVC.
+for release in empty non-ascii missing readonly multi main; do
   h -n $NS uninstall "$release" --wait --timeout 5m >> "$log" 2>&1 || fail "uninstall $release"
 done
 left=$(k -n $NS get deployments,services -l app.kubernetes.io/name=browserless -o name | wc -l | tr -d ' ')

@@ -1,8 +1,9 @@
 # Browserless Helm chart
 
-A minimal, dependency-free chart for one Browserless Chromium instance: a
-Deployment and a ClusterIP Service. It needs Helm 4, Linux amd64 or arm64 nodes
-and a maintained Kubernetes version (see [Compatibility](#compatibility)). The
+A minimal, dependency-free chart for Browserless Chromium: a Deployment of one
+or more identical instances and a ClusterIP Service. It needs Helm 4, Linux
+amd64 or arm64 nodes and a maintained Kubernetes version (see
+[Compatibility](#compatibility)). The
 default image is the `ghcr.io/browserless/chromium` release that `image.tag`
 names in [`values.yaml`](charts/browserless/values.yaml); the chart's
 `appVersion` always names the same release.
@@ -117,7 +118,8 @@ dependency.
   the application, home, temporary or shared-memory paths (`/usr/src/app`,
   `/home/blessuser`, `/tmp`, `/dev/shm`). One profile supports one browser at a
   time, and a browser killed abruptly leaves `Singleton*` lock files that a
-  replacement pod cannot get past until they are removed.
+  replacement pod cannot get past until they are removed. A volume needs
+  `replicaCount: 1` (see [Replicas](#replicas)).
 - **Cookies:** in tests, cookies changed less than about 30 s before a session
   ended were missing from the profile afterwards (Chromium writes them on a
   timer), so keep a session open at least 30 s after changes that must
@@ -128,24 +130,53 @@ dependency.
   service-account token. The root filesystem stays writable for Chromium. The
   chart sets `DEBUG` without debug-level logs, which print launch options
   including `TOKEN`.
-- **Updates:** exactly one replica with Recreate updates, so every upgrade
-  interrupts service and can end active sessions, and a failed upgrade (for
-  example an unpullable image) leaves no ready pod until a rollback. Check that a
-  new image exists for your nodes' architecture first. Upgrade with all your
-  values every time, for example the same values file (`-f`): an upgrade that
+- **Updates:** the Deployment uses Recreate: an upgrade that changes the pods
+  stops all of them before starting new ones, so it interrupts service and can
+  end active sessions, and a failed upgrade (for example an unpullable image)
+  leaves no ready pod until a rollback. Check that a new image exists for your
+  nodes' architecture first. Upgrade with all your values every time, for example the same values file (`-f`): an upgrade that
   passes any `--set` or `-f` resets every value it omits to the chart default,
   so one that sets only the token Secret drops `persistence.existingClaim`. A
   values file that sets `image.digest` or `image.tag` keeps that image across
   chart upgrades. There is no draining, autoscaling, Ingress, TLS or
   NetworkPolicy, and no claim of high availability or tenant isolation.
 
+### Replicas
+
+`replicaCount` (default 1) runs that many identical, independent instances
+behind the Service. Pass it with all your other values, for example:
+
+```sh
+helm upgrade browserless oci://ghcr.io/browserless/charts/browserless \
+  --namespace browserless --set token.existingSecret=browserless-token \
+  --set replicaCount=2 --wait --timeout 10m
+```
+
+- Kubernetes sends each new connection to one ready pod, without regard to its
+  load or queue. Everything on that connection stays on that pod: a WebSocket
+  session for its whole life, and every request on a reused keep-alive
+  connection. Clients spread work across pods only by opening new connections.
+- The pods share nothing. `concurrent` and `queued` apply to each pod, and a
+  browser or session exists only on the pod that started it, so reconnecting to
+  an existing browser through the Service is not supported; there is no session
+  stickiness.
+- Readiness takes a saturated pod out of the Service, so new connections go to
+  the other pods while the connections it already accepted normally continue.
+- `persistence.existingClaim` must be empty above one replica, and the chart
+  refuses to render otherwise: every replica would mount the same volume, and a
+  browser profile supports one browser at a time, also on a ReadWriteMany
+  volume.
+- Changing only `replicaCount` adds or removes pods without restarting the
+  others; sessions on a removed pod are not moved or drained. An upgrade that
+  changes the pods stops every replica first (see Updates above).
+
 ## Probes
 
 Readiness runs Node in the container against authenticated `/pressure` with
 `Accept: text/plain`, which returns 503 when saturated (its JSON form returns 200
 either way). Startup and liveness only check TCP, so load takes the pod out of
-the Service instead of restarting it; with one replica, clients must retry while
-it has no ready endpoint.
+the Service instead of restarting it. While no pod is ready (with one replica,
+whenever it is saturated), clients must retry.
 A port-forward connects to the pod even while it is not ready; check the
 Service's EndpointSlices to see whether it routes to the pod.
 
@@ -203,10 +234,12 @@ disposable kind cluster under the restricted Pod Security Standard and checks
 real browser requests and authentication through the pod and the Service, a
 profile on a PVC surviving pod replacement and rollback, saturation removing the
 only endpoint without a restart and capacity restoring it, the token and volume
-guards, that the token never reaches a log, uninstall keeping the PVC, and with
-`UPGRADE_FROM` an upgrade that never runs two browsers at once. It deletes its
-cluster unless `KEEP_CLUSTER=1` and writes redacted diagnostics to
-`tests/e2e/out/`. Its sessions are idle: it shows admission behaviour, not
+guards, that the token never reaches a log, a second release scaled 1 → 2 → 1
+whose Service selects only its own pods and sends new connections, both
+requests and WebSocket sessions, to each of its two pods, uninstall keeping the
+PVC, and with `UPGRADE_FROM` an upgrade that never runs two browsers at once.
+It deletes its cluster unless `KEEP_CLUSTER=1` and writes redacted diagnostics
+to `tests/e2e/out/`. Its sessions are idle: it shows admission behaviour, not
 memory capacity.
 
 ### Tools

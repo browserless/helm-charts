@@ -1,6 +1,6 @@
 apiVersion: v2
 name: browserless
-description: A single-instance Browserless Chromium service
+description: Browserless Chromium as a Deployment and a ClusterIP Service
 type: application
 version: 0.1.0
 appVersion: "2.62.0"

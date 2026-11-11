@@ -76,7 +76,9 @@ test('rejects a missing token Secret and invalid values', () => {
     { service: { port: '3000' } },
     { resources: [] },
     { persistence: { mountPath: 'relative' } },
-    { replicaCount: 2 },
+    { replicaCount: 0 },
+    { replicaCount: 1.5 },
+    { replicaCount: '2' },
     { token: { value: 'plaintext' } },
     { concurrent: 0 },
     { concurrent: -1 },
@@ -91,6 +93,23 @@ test('rejects a missing token Secret and invalid values', () => {
   }
 });
 
+test('replicas', () => {
+  const docs = render('alpha', { replicaCount: 3 });
+  const replicated = kind(docs, 'Deployment');
+  assert.equal(replicated.spec.replicas, 3, 'replicaCount sets the replicas');
+  assert.equal(replicated.spec.strategy.type, 'Recreate', 'an upgrade still stops every replica first');
+  assert.deepEqual(kind(docs, 'Service').spec.selector, replicated.spec.selector.matchLabels, 'the Service selects every replica');
+  assert.equal(replicated.spec.selector.matchLabels['app.kubernetes.io/instance'], 'alpha', 'and only pods of its own release');
+  // A browser profile supports one browser at a time, so replicas must not share a volume.
+  for (const replicaCount of [2, 3]) {
+    const { err, ok } = helm('template', 'alpha', chart, '-f', valuesFile({ replicaCount, persistence: { existingClaim: 'data' } }));
+    assert.ok(!ok && err.includes('replicaCount above 1 cannot be combined with persistence.existingClaim'), `replicaCount ${replicaCount} with a claim must fail: ${err}`);
+  }
+  const single = kind(render('alpha', { replicaCount: 1, persistence: { existingClaim: 'data' } }), 'Deployment');
+  assert.equal(single.spec.replicas, 1, 'one replica may use a claim');
+  assert.equal(single.spec.template.spec.volumes.find((v: Json) => v.name === 'data').persistentVolumeClaim.claimName, 'data', 'and mounts it');
+});
+
 test('default rendering', () => {
   assert.deepEqual(defaults.map((doc) => doc.kind).sort(), ['Deployment', 'Service'], 'only Deployment and Service');
   const service = kind(defaults, 'Service');
@@ -101,7 +120,7 @@ test('default rendering', () => {
   assert.equal(meta.appVersion, tag.replace(/^v/, ''), 'appVersion names the default image release');
   // Helm publishes the first source as the OCI package's org.opencontainers.image.source.
   assert.equal(meta.sources[0], 'https://github.com/browserless/helm-charts', 'the chart repository is the first source');
-  assert.equal(deployment.spec.replicas, 1, 'single replica');
+  assert.equal(deployment.spec.replicas, 1, 'one replica by default');
   assert.equal(deployment.spec.strategy.type, 'Recreate', 'no overlapping PVC users during upgrade');
   assert.equal(service.spec.type, 'ClusterIP', 'internal service');
   assert.deepEqual(service.spec.selector, deployment.spec.selector.matchLabels, 'selectors agree');
