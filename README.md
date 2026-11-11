@@ -166,7 +166,8 @@ helm upgrade browserless oci://ghcr.io/browserless/charts/browserless \
 
 If you installed by digest as in [Releases](#releases), put the same
 `"$CHART@$DIGEST"` reference in place of the chart name and leave out
-`--version`.
+`--version`; if you installed from a checkout, put the same checkout's chart
+directory there instead, such as `./helm-charts/charts/browserless`.
 
 - Kubernetes sends each new connection to one ready pod, without regard to its
   load or queue. Everything on that connection stays on that pod: a WebSocket
