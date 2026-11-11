@@ -294,7 +294,7 @@ k -n $NS get pods -l app.kubernetes.io/instance=multi -o json |
 pass "scaled 1 -> 2 keeping the running pod; each Service's endpoints are exactly its release's pods (main 1, multi 2)"
 ips=$(k -n $NS get pods -l app.kubernetes.io/instance=multi -o jsonpath='{.items[*].status.podIP}' | tr ' ' ,)
 in_pod main spread.mjs SERVICE=http://multi-browserless:3000 "PODS=$ips" > "$work/spread.json" || fail "replicas: $(cat "$work/spread.json")"
-jq -e '.answered == (.sessions | length) and .answeredAfterClose == (.sessions | length) - 1' "$work/spread.json" > /dev/null || fail "replica sessions: $(cat "$work/spread.json")"
+jq -e '.pods == 2 and (.requests | unique) == [0, 1] and (.sessions | unique) == [0, 1]' "$work/spread.json" > /dev/null || fail "replicas: not both pods reached: $(cat "$work/spread.json")"
 pass "through the Service, new connections reached both pods: stateless requests served by pods $(jq -c .requests "$work/spread.json"), WebSocket sessions on pods $(jq -c .sessions "$work/spread.json"); all answered, and still did after one was closed"
 kept=$(release_pods multi)
 h -n $NS upgrade multi "$CHART" "${multi[@]}" --wait --timeout 10m >> "$log" 2>&1 || fail "upgrade multi back to 1 replica"

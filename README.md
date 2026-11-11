@@ -10,8 +10,8 @@ names in [`values.yaml`](charts/browserless/values.yaml); the chart's
 
 ## Quick start
 
-> **Available after the first release.** No chart version has been published
-> yet, so the install step below does not work yet; use
+> The chart is published from its first release on. If the install step below
+> fails with `404: name unknown`, no version is published yet: use
 > [Install from a checkout](#install-from-a-checkout) for that step instead.
 
 Needs Helm 4, kubectl with access to a cluster, OpenSSL and curl. Create a new
@@ -149,13 +149,23 @@ dependency.
 ### Replicas
 
 `replicaCount` (default 1) runs that many identical, independent instances
-behind the Service. Pass it with all your other values, for example:
+behind the Service. Change it with the chart version (or digest) and all the
+values you installed with. Otherwise Helm takes the newest chart, which can
+bring another image, and resets the values you leave out to their defaults; if
+either changes the pods, every pod is replaced (see Updates above). For the
+quick start's release, with `0.1.0` replaced by the `VERSION` that
+`helm get metadata browserless --namespace browserless` shows:
 
 ```sh
 helm upgrade browserless oci://ghcr.io/browserless/charts/browserless \
-  --namespace browserless --set token.existingSecret=browserless-token \
-  --set replicaCount=2 --wait --timeout 10m
+  --version 0.1.0 --namespace browserless \
+  --set token.existingSecret=browserless-token --set replicaCount=2 \
+  --wait --timeout 10m
 ```
+
+If you installed by digest as in [Releases](#releases), put the same
+`"$CHART@$DIGEST"` reference in place of the chart name and leave out
+`--version`.
 
 - Kubernetes sends each new connection to one ready pod, without regard to its
   load or queue. Everything on that connection stays on that pod: a WebSocket
@@ -165,8 +175,10 @@ helm upgrade browserless oci://ghcr.io/browserless/charts/browserless \
   browser or session exists only on the pod that started it, so reconnecting to
   an existing browser through the Service is not supported; there is no session
   stickiness.
-- Readiness takes a saturated pod out of the Service, so new connections go to
-  the other pods while the connections it already accepted normally continue.
+- Readiness takes a saturated pod out of the Service at its next check, up to
+  10 s later, plus the time the Service takes to update; until then the pod can
+  still receive new connections. After that, new connections go to the other
+  pods, while the connections it already accepted normally continue.
 - `persistence.existingClaim` must be empty above one replica, and the chart
   refuses to render otherwise: every replica would mount the same volume, and a
   browser profile supports one browser at a time, also on a ReadWriteMany
