@@ -29,7 +29,7 @@ git clone https://github.com/browserless/helm-charts.git && (
   until grep -qs Forwarding port-forward.log || ! kill -0 "$pf" 2>/dev/null; do sleep 1; done
   grep -q Forwarding port-forward.log &&
     printf 'Authorization: Bearer %s\n' "$token" |
-    curl -sS -H @- -H 'Content-Type: application/json' \
+    curl -fsS -H @- -H 'Content-Type: application/json' \
       -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}' \
       http://127.0.0.1:3000/chromium/content
 )
