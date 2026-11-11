@@ -56,8 +56,9 @@ dependency.
   files that a replacement pod cannot get past until they are removed.
 - **Cookies:** in tests, cookies changed less than about 30 s before a session
   ended were missing from the profile afterwards (Chromium writes them on a
-  timer), so keep a session open at least 30 s after changes that must persist. The default `timeout` ends sessions after 30 s; raise it or
-  pass `&timeout=<ms>` when connecting.
+  timer), so keep a session open at least 30 s after changes that must
+  persist. The default `timeout` ends sessions after 30 s; raise it or pass
+  `&timeout=<ms>` when connecting.
 - **Security:** the defaults meet the restricted Pod Security Standard (UID 999,
   no privilege escalation, no capabilities, runtime-default seccomp) and mount no
   service-account token. The root filesystem stays writable for Chromium. The

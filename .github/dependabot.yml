@@ -56,6 +56,11 @@ updates:
       npm:
         patterns:
           - '*'
+    # The Node.js types follow the major version in .nvmrc, which CI runs.
+    ignore:
+      - dependency-name: '@types/node'
+        update-types:
+          - version-update:semver-major
 
   # One tested Kubernetes minor version per directory: patch and digest updates
   # only. Adding or removing a minor version is a deliberate change (README).
