@@ -1,0 +1,65 @@
+version: 2
+# Every version CI consumes is in a file Dependabot natively updates:
+#   github-actions  workflow actions (commit SHAs with version comments)
+#   helm            chart dependencies in Chart.yaml and the default images in
+#                   values.yaml (the Browserless Chromium image); the
+#                   dependabot-app-version workflow then syncs appVersion
+#   docker          the kindest/node images in the kind cluster configs
+#   gomod           Helm CLI, kind CLI and actionlint (tools/go.mod), which
+#                   scripts/build-tools.sh builds at exactly those versions
+# Not covered: the Go toolchain (CI uses the latest stable release), and the
+# runner's preinstalled Ruby and shellcheck. kubectl comes from the node image.
+#
+# Commit prefixes decide releases (see release-please-config.json): `build`
+# changes what the chart deploys and cuts a patch release; `ci` does not.
+updates:
+  - package-ecosystem: helm
+    directory: /charts/browserless
+    schedule:
+      interval: daily
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: build
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - '*'
+
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: docker
+    directory: /tests/kind/latest
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+
+  # The oldest qualified Kubernetes minor version: patch and digest updates only.
+  - package-ecosystem: docker
+    directory: /tests/kind/oldest
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    ignore:
+      - dependency-name: kindest/node
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

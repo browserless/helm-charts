@@ -1,0 +1,36 @@
+name: PR Title
+
+# Release Please reads Conventional Commits. Pull requests are squash-merged, so
+# the title becomes the commit subject that decides the release: feat (minor),
+# fix, perf, revert and build (patch, including Dependabot image updates) appear
+# in the changelog; the other types are hidden and do not cut a release.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: amannn/action-semantic-pull-request@2252a14e810aa9b85c2d560bd7070c802206ecf6 # v6.1.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with changelog-sections in release-please-config.json.
+          types: |
+            feat
+            fix
+            perf
+            revert
+            build
+            chore
+            ci
+            docs
+            style
+            refactor
+            test

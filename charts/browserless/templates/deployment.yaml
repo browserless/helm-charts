@@ -1,0 +1,123 @@
+{{- if not (regexMatch "^[a-z]([-a-z0-9]*[a-z0-9])?$" .Release.Name) }}
+{{- fail "release name must start with a lowercase letter and contain only lowercase letters, digits and '-', because it prefixes the Service name" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-browserless" .Release.Name | trunc 63 | trimSuffix "-" }}
+  labels:
+    app.kubernetes.io/name: browserless
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: browserless
+      app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: browserless
+        app.kubernetes.io/instance: {{ .Release.Name | quote }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{ toJson .Values.podSecurityContext }}
+      imagePullSecrets: {{ toJson .Values.imagePullSecrets }}
+      nodeSelector: {{ toJson .Values.nodeSelector }}
+      tolerations: {{ toJson .Values.tolerations }}
+      affinity: {{ toJson .Values.affinity }}
+      containers:
+        - name: browserless
+          {{- if .Values.image.digest }}
+          image: {{ printf "%s@%s" .Values.image.repository .Values.image.digest | quote }}
+          {{- else }}
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext: {{ toJson .Values.securityContext }}
+          # Do not let an empty Secret value enable unauthenticated service. Bearer
+          # authentication (and the readiness probe's HTTP header) can carry only
+          # printable ASCII without spaces; a trailing newline from a token file or
+          # a non-ASCII character would leave the pod running but never ready.
+          # A mounted volume that UID 999 cannot write would silently lose profiles.
+          command:
+            - /bin/sh
+            - -ec
+            - >-
+              case "${TOKEN:?TOKEN must be nonempty}" in *[!!-~]*)
+              echo 'TOKEN must contain only printable ASCII characters, without whitespace' >&2; exit 2;; esac;
+              if [ -n "${PERSISTENCE_MOUNT_PATH:-}" ] && [ ! -w "$PERSISTENCE_MOUNT_PATH" ]; then
+              echo "persistence volume $PERSISTENCE_MOUNT_PATH is not writable by UID $(id -u): set podSecurityContext.fsGroup or fix the volume ownership" >&2; exit 2; fi;
+              exec ./scripts/start.sh
+          env:
+            - name: TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "token.existingSecret is required" .Values.token.existingSecret | quote }}
+                  key: {{ .Values.token.key | quote }}
+            # The image's default DEBUG also enables route debug logs that print
+            # browser launch options, including the environment and TOKEN.
+            - name: DEBUG
+              value: "browserless*,-**:verbose,-**:debug"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "3000"
+            - name: CONCURRENT
+              value: {{ .Values.concurrent | int64 | quote }}
+            - name: QUEUED
+              value: {{ .Values.queued | int64 | quote }}
+            - name: TIMEOUT
+              value: {{ .Values.timeout | int64 | quote }}
+            {{- if .Values.persistence.existingClaim }}
+            - name: PERSISTENCE_MOUNT_PATH
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 3000
+          resources: {{ toJson .Values.resources }}
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - >-
+                  const http = require('node:http');
+                  const req = http.get('http://127.0.0.1:3000/pressure',
+                  {headers: {Accept: 'text/plain', Authorization: 'Bearer ' + process.env.TOKEN}},
+                  res => { res.resume(); process.exit(res.statusCode === 200 ? 0 : 1); });
+                  req.setTimeout(2000, () => req.destroy());
+                  req.on('error', () => process.exit(1));
+            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 1
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+            {{- if .Values.persistence.existingClaim }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.shmSizeLimit | quote }}
+        {{- if .Values.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | quote }}
+        {{- end }}

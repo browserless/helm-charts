@@ -1,0 +1,58 @@
+image:
+  repository: ghcr.io/browserless/chromium
+  tag: "v2.62.0"
+  # When supplied, digest replaces tag entirely.
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Required: pre-create this Secret in the release namespace with a nonempty token.
+token:
+  existingSecret: ""
+  key: TOKEN
+
+service:
+  port: 3000
+
+# Admission limits, passed to the image as CONCURRENT, QUEUED and TIMEOUT
+# (milliseconds). The defaults equal the image's own defaults. Every running
+# session is a browser: size resources.limits.memory for `concurrent` browsers
+# of your workload plus /dev/shm. Requests beyond concurrent + queued get 429.
+# Unlimited (-1) and disabled-timeout (0 or less) settings are unsupported.
+concurrent: 10
+queued: 10
+timeout: 30000
+
+resources:
+  requests:
+    cpu: "500m"
+    memory: "1Gi"
+  limits:
+    cpu: "2"
+    memory: "2Gi"
+# Shared memory counts toward container memory usage; this is a cap, not a reservation.
+shmSizeLimit: "1Gi"
+
+# Mount only; does not automatically enable browser profile persistence.
+persistence:
+  existingClaim: ""
+  mountPath: /data
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# Defaults satisfy the Kubernetes "restricted" Pod Security Standard. fsGroup lets
+# UID 999 write to block-storage volumes whose root directory is owned by root.
+podSecurityContext:
+  fsGroup: 999
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+# The upstream image runs as blessuser (UID 999). Chromium needs writable temp/home.
+# Do not assume a read-only root filesystem works without additional mounts.
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 999
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]

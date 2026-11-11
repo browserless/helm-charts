@@ -1,0 +1,3 @@
+# Repository files that must not ship in the chart package.
+.helmignore
+CHANGELOG.md

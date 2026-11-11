@@ -1,0 +1,53 @@
+name: Dependabot appVersion sync
+
+# Dependabot (helm) updates image.tag in a chart's values.yaml but not the
+# chart's appVersion, which CI requires to match. For Dependabot's own pull
+# requests only, commit the matching appVersion to the PR branch, then start CI
+# for that commit: pushes made with GITHUB_TOKEN do not trigger workflows.
+
+on:
+  pull_request:
+    paths:
+      - 'charts/*/values.yaml'
+
+permissions: {}
+
+jobs:
+  sync:
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      # The exact commit this run validated, not whatever the branch holds now.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Commit the matching appVersion
+        id: sync
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        # The push is a fast-forward of that commit; if Dependabot has updated
+        # the branch since, it is rejected and the newer commit's run syncs it.
+        run: |
+          scripts/sync-app-version.sh
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am 'build: sync appVersion with the image tag'
+          git push origin "HEAD:refs/heads/$HEAD_REF"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      - name: Run CI on the synced commit
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF"

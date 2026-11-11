@@ -1,0 +1,53 @@
+name: Release Please
+
+# Maintains one draft release pull request per chart from Conventional Commits on
+# main (googleapis/release-please-action, as in browserless/browserless). The
+# release PR bumps Chart.yaml `version`, CHANGELOG.md and the manifest; it does
+# not publish anything. Merging it creates the `<chart>-v<version>` tag and the
+# GitHub Release, and publish.yml then publishes that release's chart.
+#
+# Uses a GitHub App token (not GITHUB_TOKEN) so the release PR runs CI and the
+# release triggers publish.yml. The App's client ID and private key live only in
+# the `release-please` environment, which must be limited to the main branch, so
+# no other branch or pull request workflow can read the key. Without them this
+# workflow fails; it never falls back to GITHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release-please
+    steps:
+      - name: Require the release app configuration
+        env:
+          CLIENT_ID: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          HAS_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ -z "$CLIENT_ID" ] || [ "$HAS_KEY" != true ]; then
+            echo "::error::Set the RELEASE_APP_CLIENT_ID variable and RELEASE_APP_PRIVATE_KEY secret in the release-please environment (see README, Releases)."
+            exit 1
+          fi
+      # The token is limited to this repository and these permissions.
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-issues: write
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

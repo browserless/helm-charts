@@ -1,0 +1,88 @@
+name: Publish chart
+
+# Publishes the chart of a published GitHub Release (created by release-please
+# when its release PR merges) to oci://ghcr.io/browserless/charts. Runs only on
+# release events, from the release tag; scripts/publish-chart.sh verifies the tag
+# is on main and matches Chart.yaml and the release manifest, refuses to
+# overwrite an existing version, and checks the pushed chart by pulling it back.
+# The job then records a signed SLSA provenance attestation for the exact OCI
+# manifest digest it pushed and verifies it against the registry. That digest
+# and attestation identify the published chart: other repository writers can
+# also push packages with GITHUB_TOKEN, so the registry alone is not proof.
+# Keep `release` the only trigger, without workflow_dispatch: consumers trust
+# attestations this workflow signs for refs/tags/browserless-v*.
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: publish-chart
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  publish:
+    # Release Please tags chart releases as <chart>-v<version>.
+    if: contains(github.event.release.tag_name, '-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Add required reviewers to this environment to gate publication.
+    environment: chart-release
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # Sigstore signing certificate for the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Build the tools locked in tools/go.mod
+        run: scripts/build-tools.sh
+      - name: Chart tests
+        run: ruby tests/chart_test.rb
+        env:
+          HELM: .bin/helm
+      - name: Log in to GHCR
+        env:
+          ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Helm, the attest action's registry push and gh attestation verify all
+        # read the Docker credentials file, which the attest action only finds
+        # at ~/.docker/config.json.
+        run: |
+          echo "HELM_REGISTRY_CONFIG=$HOME/.docker/config.json" >> "$GITHUB_ENV"
+          HELM_REGISTRY_CONFIG="$HOME/.docker/config.json" \
+            .bin/helm registry login ghcr.io --username "$ACTOR" --password-stdin <<< "$GITHUB_TOKEN"
+      - name: Publish
+        id: publish
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          HELM: .bin/helm
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/publish-chart.sh "$TAG"
+      - name: Attest provenance of the pushed manifest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.publish.outputs.name }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify the attestation for the published version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.publish.outputs.name }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          gh attestation verify "oci://$NAME:${TAG##*-v}" --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" \
+            --source-ref "refs/tags/$TAG" --source-digest "$(git rev-parse HEAD)"

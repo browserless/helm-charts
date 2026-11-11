@@ -1,0 +1,12 @@
+apiVersion: v2
+name: browserless
+description: A single-instance Browserless Chromium service
+type: application
+version: 0.1.0
+appVersion: "2.62.0"
+kubeVersion: ">=1.25.0-0"
+home: https://www.browserless.io/
+# Helm records the first source as the OCI package's org.opencontainers.image.source.
+sources:
+  - https://github.com/browserless/helm-charts
+  - https://github.com/browserless/browserless

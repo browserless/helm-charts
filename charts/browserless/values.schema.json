@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "token", "service", "concurrent", "queued", "timeout", "resources", "shmSizeLimit", "persistence", "imagePullSecrets", "nodeSelector", "tolerations", "affinity", "podSecurityContext", "securityContext"],
+  "definitions": {
+    "name": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
+    "quantity": {"anyOf": [
+      {"type": "number", "minimum": 0},
+      {"type": "string", "pattern": "^([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][+-]?[0-9]+|Ki|Mi|Gi|Ti|Pi|Ei|[numkMGTPE])?$"}
+    ]},
+    "resourceList": {"type": "object", "additionalProperties": false, "properties": {"cpu": {"$ref": "#/definitions/quantity"}, "memory": {"$ref": "#/definitions/quantity"}, "ephemeral-storage": {"$ref": "#/definitions/quantity"}}}
+  },
+  "properties": {
+    "global": {"type": "object"},
+    "concurrent": {"type": "integer", "minimum": 1},
+    "queued": {"type": "integer", "minimum": 0},
+    "timeout": {"type": "integer", "minimum": 1},
+    "image": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "tag", "digest", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1, "pattern": "^[^\\s@]+$"},
+        "tag": {"type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$"},
+        "digest": {"type": "string", "pattern": "^(sha256:[a-f0-9]{64})?$"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "token": {
+      "type": "object", "additionalProperties": false, "required": ["existingSecret", "key"],
+      "properties": {
+        "existingSecret": {"$ref": "#/definitions/name"},
+        "key": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-zA-Z0-9._-]+$"}
+      }
+    },
+    "service": {"type": "object", "additionalProperties": false, "required": ["port"], "properties": {"port": {"type": "integer", "minimum": 1, "maximum": 65535}}},
+    "resources": {"type": "object", "additionalProperties": false, "properties": {"requests": {"$ref": "#/definitions/resourceList"}, "limits": {"$ref": "#/definitions/resourceList"}}},
+    "shmSizeLimit": {"$ref": "#/definitions/quantity"},
+    "persistence": {
+      "type": "object", "additionalProperties": false, "required": ["existingClaim", "mountPath"],
+      "properties": {
+        "existingClaim": {"anyOf": [{"const": ""}, {"$ref": "#/definitions/name"}]},
+        "mountPath": {"type": "string", "pattern": "^/[^\\s]+$"}
+      }
+    },
+    "imagePullSecrets": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"$ref": "#/definitions/name"}}}},
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tolerations": {"type": "array", "items": {"type": "object"}},
+    "affinity": {"type": "object"},
+    "podSecurityContext": {"type": "object"},
+    "securityContext": {"type": "object"}
+  }
+}
