@@ -2,8 +2,8 @@ name: Publish chart
 
 # Publishes the chart of a published GitHub Release (created by release-please
 # when its release PR merges) to oci://ghcr.io/browserless/charts. Runs only on
-# release events, from the release tag. The verify job runs the chart tests;
-# then scripts/publish-chart.sh verifies the tag is on main and matches
+# release events, from the release's commit. The verify job runs the chart
+# tests; then scripts/publish-chart.sh verifies the tag is on main and matches
 # Chart.yaml and the release manifest, refuses to overwrite an existing
 # version, and checks the pushed chart by pulling it back.
 # The job then records a signed SLSA provenance attestation for the exact OCI
@@ -33,16 +33,13 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    outputs:
-      commit: ${{ steps.commit.outputs.sha }}
     steps:
+      # github.sha is the commit the release tag pointed to when the release
+      # was published. Both jobs check it out, so publish uses what this tested.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: refs/tags/${{ github.event.release.tag_name }}
+          ref: ${{ github.sha }}
           persist-credentials: false
-      # Recorded before any npm code runs; the publish job checks out this commit.
-      - id: commit
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
@@ -72,7 +69,7 @@ jobs:
       # release tag still points to it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.verify.outputs.commit }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       # Node runs only scripts that import nothing but Node built-ins.

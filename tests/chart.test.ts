@@ -283,9 +283,10 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
     'publish.yml publish',
     'release-please.yml release-please',
   ]);
-  // The publishing job publishes the commit the read-only verify job tested.
+  // Both jobs check out the release event's commit, so the publishing job
+  // publishes the commit the read-only verify job tested.
   const publish = readYaml('.github/workflows/publish.yml');
-  assert.equal(publish.jobs.publish.steps[0].with.ref, '${{ needs.verify.outputs.commit }}');
+  for (const job of ['verify', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
 });
 
 test('every workflow job runs on an Ubuntu 26.04 runner', () => {
