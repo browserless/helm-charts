@@ -10,9 +10,10 @@ names in [`values.yaml`](charts/browserless/values.yaml); the chart's
 
 ## Quick start
 
-> The chart is published from its first release on. If the install step below
-> fails with `404: name unknown`, no version is published yet: use
-> [Install from a checkout](#install-from-a-checkout) for that step instead.
+> If the chart is not yet published or not accessible, use
+> [Install from a checkout](#install-from-a-checkout) for the install step
+> instead. After publication, verify the package is public for anonymous
+> installs.
 
 Needs Helm 4, kubectl with access to a cluster, OpenSSL and curl. Create a new
 namespace and a Secret holding a random token:
