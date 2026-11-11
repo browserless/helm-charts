@@ -4,6 +4,9 @@ name: Dependabot appVersion sync
 # chart's appVersion, which CI requires to match. For Dependabot's own pull
 # requests only, commit the matching appVersion to the PR branch, then start CI
 # for that commit: pushes made with GITHUB_TOKEN do not trigger workflows.
+# Reading the charts needs the scripts' npm dependency (yaml), so a job without
+# write access computes the versions, and the job that pushes runs only git,
+# sed and gh on a fresh runner.
 
 on:
   pull_request:
@@ -13,7 +16,7 @@ on:
 permissions: {}
 
 jobs:
-  sync:
+  versions:
     if: >-
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
@@ -21,38 +24,70 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
-      contents: write
-      actions: write
+      contents: read
+    outputs:
+      updates: ${{ steps.sync.outputs.updates }}
     steps:
-      # The exact commit this run validated, not whatever the branch holds now.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
       # Only the locked runtime dependency (yaml), without install scripts.
       - run: npm ci --ignore-scripts --omit=dev
-      - name: Commit the matching appVersion
+      - name: Find the matching appVersions
         id: sync
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        # The push is a fast-forward of that commit; if Dependabot has updated
-        # the branch since, it is rejected and the newer commit's run syncs it.
+        # `<chart>=<appVersion>` for each chart whose appVersion must change.
         run: |
           node scripts/sync-app-version.ts
-          if git diff --quiet; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+          updates=
+          for file in $(git diff --name-only); do
+            chart=${file#charts/}
+            updates+="${chart%/Chart.yaml}=$(sed -n 's/^appVersion: "\(.*\)"$/\1/p' "$file") "
+          done
+          echo "updates=$updates" >> "$GITHUB_OUTPUT"
+
+  push:
+    needs: versions
+    if: needs.versions.outputs.updates != ''
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      # The exact commit the versions job read, not whatever the branch holds now.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - name: Commit the matching appVersion
+        env:
+          UPDATES: ${{ needs.versions.outputs.updates }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        # Accepts only a chart name and a release version for each update, and
+        # changes nothing but those charts' appVersion lines. The push is a
+        # fast-forward of that commit; if Dependabot has updated the branch
+        # since, it is rejected and the newer commit's run syncs it.
+        run: |
+          for update in $UPDATES; do
+            chart=${update%%=*} version=${update#*=}
+            if ! [[ $chart =~ ^[a-z0-9][a-z0-9-]*$ && $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+              echo "invalid update '$update'" >&2
+              exit 1
+            fi
+            file=charts/$chart/Chart.yaml
+            [ "$(grep -c '^appVersion:' "$file")" = 1 ] || { echo "$file: expected one appVersion line" >&2; exit 1; }
+            sed -i "s/^appVersion:.*/appVersion: \"$version\"/" "$file"
+          done
+          git diff --stat
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -am 'build: sync appVersion with the image tag'
           git push origin "HEAD:refs/heads/$HEAD_REF"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
       - name: Run CI on the synced commit
-        if: steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}

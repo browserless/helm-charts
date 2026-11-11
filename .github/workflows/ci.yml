@@ -56,6 +56,9 @@ jobs:
         kubernetes: ['1.35', '1.36', '1.37']
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    outputs:
+      # Every leg that runs reports the matrix size; the kind job checks each leg.
+      legs: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,16 +91,26 @@ jobs:
 
   # The required runtime check. It always runs, and fails unless static and every
   # e2e job succeeded, so a failed, cancelled or skipped job cannot pass it.
+  # GitHub can report a matrix as successful when a leg was cancelled before it
+  # got a runner, so it also checks each leg of this run attempt.
   kind:
     if: always()
     needs: [static, e2e]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
+    permissions:
+      actions: read
     steps:
       - name: Require static and every e2e job to succeed
         env:
+          GH_TOKEN: ${{ github.token }}
           STATIC: ${{ needs.static.result }}
           E2E: ${{ needs.e2e.result }}
+          LEGS: ${{ needs.e2e.outputs.legs }}
         run: |
-          echo "static: $STATIC, e2e: $E2E"
-          [ "$STATIC" = success ] && [ "$E2E" = success ]
+          echo "static: $STATIC, e2e: $E2E, legs: $LEGS"
+          [ "$STATIC" = success ] && [ "$E2E" = success ] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --paginate --jq '.jobs[] | select(.name | startswith("e2e (")) | "\(.conclusion) \(.name)"' > legs
+          cat legs
+          [ "$(grep -c '^success ' legs)" -eq "$LEGS" ] && ! grep -qv '^success ' legs

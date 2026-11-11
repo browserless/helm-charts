@@ -239,9 +239,47 @@ test('kubeVersion admits exactly the Kubernetes minor versions CI tests', () => 
   const ci = readYaml('.github/workflows/ci.yml');
   assert.deepEqual(ci.jobs.e2e.strategy.matrix.kubernetes, minors.map(({ dir }) => dir), 'the e2e matrix runs every tests/kind version');
   assert.deepEqual(ci.jobs.e2e.strategy.matrix.runner, ['ubuntu-26.04', 'ubuntu-26.04-arm'], 'the e2e matrix runs on amd64 and arm64');
-  // Branch protection requires `kind`, which must fail unless every e2e job passed.
+  // Branch protection requires `kind`, which must fail unless every e2e job
+  // passed; it checks each leg because the matrix result can hide a cancelled one.
   assert.equal(ci.jobs.kind.if, 'always()');
   assert.deepEqual(ci.jobs.kind.needs, ['static', 'e2e']);
+  assert.equal(ci.jobs.e2e.outputs.legs, '${{ strategy.job-total }}');
+  assert.equal(ci.jobs.kind.steps[0].env.LEGS, '${{ needs.e2e.outputs.legs }}');
+});
+
+// npm packages are third-party code. A job that can write to the repository or
+// packages, sign, or read an environment's secrets installs none, and every
+// script it runs, directly or from a shell script, imports only Node built-ins.
+test('jobs that can write, sign or read secrets run no npm packages', () => {
+  const builtinsOnly = (script: string, where: string) => {
+    for (const [, from] of readFileSync(join(root, script), 'utf8').matchAll(/\bfrom '([^']+)'/g)) {
+      assert.match(from ?? '', /^node:/, `${where} runs ${script}, which imports ${from}`);
+    }
+  };
+  const dir = join(root, '.github/workflows');
+  const privileged: string[] = [];
+  for (const file of readdirSync(dir)) {
+    const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
+    for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
+      if (!job.environment && !Object.values(job.permissions ?? workflow.permissions ?? {}).includes('write')) continue;
+      const where = `${file} ${id}`;
+      privileged.push(where);
+      for (const { run = '' } of job.steps) {
+        assert.doesNotMatch(run, /\bnpm\b/, `${where} runs npm`);
+        for (const [, script] of run.matchAll(/\b(scripts\/[\w-]+\.ts)\b/g)) builtinsOnly(script ?? '', where);
+        for (const [, shell] of run.matchAll(/\b(scripts\/[\w-]+\.sh)\b/g)) {
+          for (const [, script] of readFileSync(join(root, shell ?? ''), 'utf8').matchAll(/\b(scripts\/[\w-]+\.ts)\b/g)) {
+            builtinsOnly(script ?? '', `${where} (${shell})`);
+          }
+        }
+      }
+    }
+  }
+  assert.deepEqual(privileged.sort(), [
+    'dependabot-app-version.yml push',
+    'publish.yml publish',
+    'release-please.yml release-please',
+  ]);
 });
 
 test('every workflow job runs on an Ubuntu 26.04 runner', () => {

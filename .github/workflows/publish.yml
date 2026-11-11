@@ -2,9 +2,10 @@ name: Publish chart
 
 # Publishes the chart of a published GitHub Release (created by release-please
 # when its release PR merges) to oci://ghcr.io/browserless/charts. Runs only on
-# release events, from the release tag; scripts/publish-chart.sh verifies the tag
-# is on main and matches Chart.yaml and the release manifest, refuses to
-# overwrite an existing version, and checks the pushed chart by pulling it back.
+# release events, from the release tag. The verify job runs the chart tests;
+# then scripts/publish-chart.sh verifies the tag is on main and matches
+# Chart.yaml and the release manifest, refuses to overwrite an existing
+# version, and checks the pushed chart by pulling it back.
 # The job then records a signed SLSA provenance attestation for the exact OCI
 # manifest digest it pushed and verifies it against the registry. That digest
 # and attestation identify the published chart: other repository writers can
@@ -23,9 +24,35 @@ concurrency:
 permissions: {}
 
 jobs:
-  publish:
+  # The chart tests need the scripts' npm dependency (yaml), so they run here,
+  # without write access, and the publishing job installs no npm packages.
+  verify:
     # Release Please tags chart releases as <chart>-v<version>.
     if: contains(github.event.release.tag_name, '-v')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # Only the locked runtime dependency (yaml), without install scripts.
+      - run: npm ci --ignore-scripts --omit=dev
+      - name: Install Helm (version from tools/go.mod)
+        run: node scripts/install-tools.ts helm
+      - name: Chart tests
+        run: npm test
+      - name: appVersion matches the default image tag
+        run: node scripts/sync-app-version.ts --check
+
+  publish:
+    needs: verify
     runs-on: ubuntu-26.04
     timeout-minutes: 20
     # Add required reviewers to this environment to gate publication.
@@ -41,16 +68,13 @@ jobs:
           ref: refs/tags/${{ github.event.release.tag_name }}
           fetch-depth: 0
           persist-credentials: false
+      # Node runs only scripts that import nothing but Node built-ins.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
-      # Only the locked runtime dependency (yaml), without install scripts.
-      - run: npm ci --ignore-scripts --omit=dev
       - name: Install Helm (version from tools/go.mod)
         run: node scripts/install-tools.ts helm
-      - name: Chart tests
-        run: npm test
       - name: Log in to GHCR
         env:
           ACTOR: ${{ github.actor }}

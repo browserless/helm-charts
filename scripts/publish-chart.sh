@@ -2,13 +2,15 @@
 # Publishes one chart release to an OCI registry: scripts/publish-chart.sh <chart>-v<version>
 # publish.yml runs it for a published GitHub Release, from that release's tag.
 # It refuses to publish unless the checkout is exactly the tag, the tag is on
-# main, and Chart.yaml, the release manifest and appVersion agree; it refuses to
-# overwrite a version the registry already holds, and pulls the pushed chart
-# back to compare it byte for byte. It prints the pushed manifest digest and,
-# under GitHub Actions, adds it to the job summary and writes `name` and
-# `digest` step outputs for the provenance attestation.
+# main, and Chart.yaml and the release manifest agree; it refuses to overwrite a
+# version the registry already holds, and pulls the pushed chart back to compare
+# it byte for byte. It prints the pushed manifest digest and, under GitHub
+# Actions, adds it to the job summary and writes `name` and `digest` step
+# outputs for the provenance attestation. publish.yml's verify job has already
+# run the chart tests and checked appVersion.
 #
-# Needs Node with `npm ci` dependencies, jq and curl. Environment: HELM
+# Runs in the job that can publish and sign, so it uses no npm packages: only
+# Node built-ins, Helm, jq and curl. Environment: HELM
 # (default .bin/helm from scripts/install-tools.ts, logged in to the registry),
 # OCI_REGISTRY (default ghcr.io), OCI_NAMESPACE (default browserless/charts),
 # REGISTRY_USER and REGISTRY_PASSWORD (for the existence check), MAIN_REF
@@ -33,11 +35,10 @@ tagged=$(git -C "$root" rev-parse --verify --quiet "refs/tags/$tag^{commit}") ||
 [ "$head" = "$tagged" ] || fail "checkout $head is not tag $tag ($tagged)"
 [ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ] || fail "tracked files differ from tag $tag"
 git -C "$root" merge-base --is-ancestor "$tagged" "${MAIN_REF:-origin/main}" || fail "tag $tag is not on ${MAIN_REF:-origin/main}"
-chart_version=$(node "$root/scripts/yaml-get.ts" "$dir/Chart.yaml" version)
+chart_version=$("$HELM" show chart "$dir" | sed -n 's/^version: //p')
 [ "$chart_version" = "$version" ] || fail "Chart.yaml version $chart_version does not match tag $tag"
 manifest_version=$(jq -r --arg p "charts/$chart" '.[$p] // empty' "$root/.release-please-manifest.json")
 [ "$manifest_version" = "$version" ] || fail "release manifest has '$manifest_version' for charts/$chart, tag is $tag"
-node "$root/scripts/sync-app-version.ts" --check
 
 scheme=https plain=()
 if [ "${PLAIN_HTTP:-0}" = 1 ]; then scheme=http plain=(--plain-http); fi

@@ -122,7 +122,10 @@ UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
 `npm test` runs the chart tests (schema, defaults and overrides, entrypoint
 guards, Kubernetes and runner coverage, lint, package contents and
 reproducibility, use as a dependency) and the tool installer's tests. Node runs
-the TypeScript directly; `npm run typecheck` checks it with `tsc`.
+the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
+are third-party code, so jobs that can push, publish, sign or read an
+environment's secrets install none and run only scripts that import Node
+built-ins; the tests enforce this.
 
 `tests/e2e/kind.sh` (the CI `e2e` jobs) installs the working tree on a
 disposable kind cluster under the restricted Pod Security Standard and checks
@@ -161,14 +164,15 @@ updates are `build` commits, so a new Browserless image is a patch release.
 Release Please keeps a draft release pull request per chart that sets
 `Chart.yaml` `version`, the chart's `CHANGELOG.md` and
 `.release-please-manifest.json`. Merging it creates the tag `<chart>-v<version>`
-and its GitHub Release, which starts `publish.yml`. From the tag, it repeats the
-chart tests and runs `scripts/publish-chart.sh`, which refuses unless the
-checkout is the tag, the tag is on `main`, and the chart version, manifest and
-`appVersion` agree. It refuses to overwrite an existing version, packages
-reproducibly (times come from the tag's commit), pushes to
-`oci://ghcr.io/browserless/charts/browserless`, and pulls the chart back to
-compare bytes and digest. The job then records a signed SLSA provenance
-attestation for the pushed manifest digest and verifies it.
+and its GitHub Release, which starts `publish.yml`. From the tag, a job without
+write access repeats the chart tests and checks `appVersion`. The publishing
+job then runs `scripts/publish-chart.sh`, which refuses unless the checkout is
+the tag, the tag is on `main`, and the chart version and manifest agree. It
+refuses to overwrite an existing version, packages reproducibly (times come
+from the tag's commit), pushes to `oci://ghcr.io/browserless/charts/browserless`,
+and pulls the chart back to compare bytes and digest. The job then records a
+signed SLSA provenance attestation for the pushed manifest digest and verifies
+it.
 
 If `publish.yml` fails before its push, rerun it. If it fails during or after
 the push, or a rerun finds the version already exists, treat that version as
