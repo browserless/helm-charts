@@ -1,0 +1,7 @@
+# actionlint 1.7.12 predates the GitHub-hosted Ubuntu 26.04 runners, so it does
+# not know their labels yet (rhysd/actionlint#682). Remove this file once the
+# version in tools/go.mod does.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm

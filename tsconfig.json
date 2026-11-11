@@ -1,0 +1,16 @@
+{
+  // Type-checks the scripts and tests, which Node runs directly by stripping
+  // their types. Nothing is emitted.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.ts", "tests/**/*.ts"]
+}

@@ -2,9 +2,10 @@
 # Runtime tests for charts/browserless on a disposable kind cluster. CI runs this
 # script unchanged; run it locally the same way (see the README).
 #
-# Needs docker, jq, openssl, perl and ruby, plus the Helm 4 and kind binaries
-# from scripts/build-tools.sh (override with HELM= and KIND=). Environment:
-#   KIND_CONFIG   kind cluster config (default tests/kind/latest/cluster.yaml)
+# Needs docker, jq, openssl and Node with the `npm ci` dependencies, plus the
+# Helm 4 and kind binaries from scripts/install-tools.ts (override with HELM=
+# and KIND=). Environment:
+#   KIND_CONFIG   kind cluster config (default: the newest tests/kind version)
 #   CLUSTER_NAME  kind cluster name (default browserless-e2e-<random>)
 #   E2E_OUT       log and redacted diagnostics (default tests/e2e/out/<cluster>)
 #   UPGRADE_FROM  optional chart reference to install first, then upgrade from
@@ -16,7 +17,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 HELM=${HELM:-$root/.bin/helm}
 KIND=${KIND:-$root/.bin/kind}
-KIND_CONFIG=${KIND_CONFIG:-$root/tests/kind/latest/cluster.yaml}
+KIND_CONFIG=${KIND_CONFIG:-$root/tests/kind/$(cd "$root/tests/kind" && printf '%s\n' * | sort -t. -k1,1n -k2,2n | tail -1)/cluster.yaml}
 CLUSTER_NAME=${CLUSTER_NAME:-browserless-e2e-$(openssl rand -hex 3)}
 E2E_OUT=${E2E_OUT:-$root/tests/e2e/out/$CLUSTER_NAME}
 CHART=$root/charts/browserless
@@ -114,8 +115,15 @@ cleanup() {
     h -n $NS list -a -o json > "$d/helm-releases.json" 2>&1
   fi
   if [ -s "$work/token" ]; then
-    TOKEN_FILE=$work/token find "$E2E_OUT" -type f -exec perl -pi -e \
-      'BEGIN { open my $f, "<", $ENV{TOKEN_FILE} or die; local $/; $t = <$f> } s/\Q$t\E/<redacted>/g' {} +
+    node -e '
+      const fs = require("node:fs"), path = require("node:path");
+      const [token, dir] = [fs.readFileSync(process.argv[1], "latin1"), process.argv[2]];
+      for (const name of fs.readdirSync(dir, { recursive: true })) {
+        const file = path.join(dir, name);
+        if (!fs.statSync(file).isFile()) continue;
+        const text = fs.readFileSync(file, "latin1");
+        if (text.includes(token)) fs.writeFileSync(file, text.split(token).join("<redacted>"), "latin1");
+      }' "$work/token" "$E2E_OUT"
     if grep -rqF -f "$work/token" "$E2E_OUT"; then
       echo "the test token is still present in $E2E_OUT" >&2
       status=1
@@ -133,20 +141,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for cmd in docker jq openssl perl ruby; do
+for cmd in docker jq openssl node; do
   command -v "$cmd" > /dev/null || fail "$cmd is required"
 done
 [[ -x $HELM && $("$HELM" version --template '{{.Version}}') == v4.* ]] || fail "HELM ($HELM) must be Helm 4"
 [ -x "$KIND" ] || fail "KIND ($KIND) is not executable"
-image=$(ruby -ryaml -e 'i = YAML.load_file(ARGV[0])["image"]; print "#{i["repository"]}:#{i["tag"]}"' "$CHART/values.yaml")
-app_version=$(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["appVersion"]' "$CHART/Chart.yaml")
-chart_version=$(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["version"]' "$CHART/Chart.yaml")
+yaml() { node "$root/scripts/yaml-get.ts" "$@"; }
+repository=$(yaml "$CHART/values.yaml" image.repository)
+tag=$(yaml "$CHART/values.yaml" image.tag)
+image=$repository:$tag
+app_version=$(yaml "$CHART/Chart.yaml" appVersion)
+chart_version=$(yaml "$CHART/Chart.yaml" version)
 [ "v$app_version" = "${image##*:}" ] || fail "appVersion $app_version does not match default image $image"
 say "chart $chart_version (appVersion $app_version, image $image); $("$KIND" version); helm $("$HELM" version --template '{{.Version}}')"
 
 "$KIND" create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" --kubeconfig "$work/kubeconfig" --wait 180s >> "$log" 2>&1 ||
   fail "kind create cluster"
-say "Kubernetes $(k version -o json | jq -r .serverVersion.gitVersion) on $(k get node "$node" -o jsonpath='{.status.nodeInfo.architecture}'), node image $(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["nodes"][0]["image"]' "$KIND_CONFIG")"
+say "Kubernetes $(k version -o json | jq -r .serverVersion.gitVersion) on $(k get node "$node" -o jsonpath='{.status.nodeInfo.architecture}'), node image $(yaml "$KIND_CONFIG" nodes.0.image)"
 
 k create namespace $NS > /dev/null
 k label namespace $NS pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted > /dev/null

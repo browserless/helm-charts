@@ -1,9 +1,10 @@
 //go:build tools
 
-// Package tools pins the command-line tools that CI builds. Dependabot (gomod)
-// updates the versions in go.mod; scripts/build-tools.sh builds exactly those,
-// verified by go.sum. The imports are direct so Dependabot treats them as
-// direct dependencies (it skips go.mod `tool` directives, which are indirect).
+// Package tools is not a program and is never built. Its go.mod lists the Helm,
+// kind and actionlint versions that CI uses, so that Dependabot (gomod)
+// proposes updates; scripts/install-tools.ts downloads those versions' official
+// release binaries. The imports are direct so Dependabot treats them as direct
+// dependencies (it skips go.mod `tool` directives, which are indirect).
 package tools
 
 import (

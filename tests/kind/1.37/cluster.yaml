@@ -1,0 +1,8 @@
+# A node image published for the kind release in tools/go.mod. Dependabot
+# (docker) proposes only patch and digest updates; see the README for how the
+# tested Kubernetes minor versions change.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+    image: kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5

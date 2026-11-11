@@ -1,14 +1,14 @@
 version: 2
 # Every version CI consumes is in a file Dependabot natively updates:
+#   helm            the default image in values.yaml (and any chart
+#                   dependencies); dependabot-app-version.yml then syncs appVersion
 #   github-actions  workflow actions (commit SHAs with version comments)
-#   helm            chart dependencies in Chart.yaml and the default images in
-#                   values.yaml (the Browserless Chromium image); the
-#                   dependabot-app-version workflow then syncs appVersion
-#   docker          the kindest/node images in the kind cluster configs
-#   gomod           Helm CLI, kind CLI and actionlint (tools/go.mod), which
-#                   scripts/build-tools.sh builds at exactly those versions
-# Not covered: the Go toolchain (CI uses the latest stable release), and the
-# runner's preinstalled Ruby and shellcheck. kubectl comes from the node image.
+#   gomod           Helm, kind and actionlint: tools/go.mod is only their version
+#                   list; scripts/install-tools.ts downloads those release binaries
+#   npm             the test and release scripts' dependencies (package-lock.json)
+#   docker          the kindest/node images in tests/kind
+# Not covered: the Node.js patch release (.nvmrc names the major version) and
+# the runner's ShellCheck, jq, OpenSSL and Docker.
 #
 # Commit prefixes decide releases (see release-please-config.json): `build`
 # changes what the chart deploys and cuts a patch release; `ci` does not.
@@ -44,16 +44,24 @@ updates:
     commit-message:
       prefix: ci
 
-  - package-ecosystem: docker
-    directory: /tests/kind/latest
+  - package-ecosystem: npm
+    directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     commit-message:
       prefix: ci
+    groups:
+      npm:
+        patterns:
+          - '*'
 
-  # The oldest qualified Kubernetes minor version: patch and digest updates only.
+  # One tested Kubernetes minor version per directory: patch and digest updates
+  # only. Adding or removing a minor version is a deliberate change (README).
   - package-ecosystem: docker
-    directory: /tests/kind/oldest
+    directories:
+      - /tests/kind/*
     schedule:
       interval: weekly
     commit-message:

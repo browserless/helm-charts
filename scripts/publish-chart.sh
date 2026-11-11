@@ -8,7 +8,8 @@
 # under GitHub Actions, adds it to the job summary and writes `name` and
 # `digest` step outputs for the provenance attestation.
 #
-# Environment: HELM (default .bin/helm, already logged in to the registry),
+# Needs Node with `npm ci` dependencies, jq and curl. Environment: HELM
+# (default .bin/helm from scripts/install-tools.ts, logged in to the registry),
 # OCI_REGISTRY (default ghcr.io), OCI_NAMESPACE (default browserless/charts),
 # REGISTRY_USER and REGISTRY_PASSWORD (for the existence check), MAIN_REF
 # (default origin/main), PLAIN_HTTP=1 for a local test registry.
@@ -32,11 +33,11 @@ tagged=$(git -C "$root" rev-parse --verify --quiet "refs/tags/$tag^{commit}") ||
 [ "$head" = "$tagged" ] || fail "checkout $head is not tag $tag ($tagged)"
 [ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ] || fail "tracked files differ from tag $tag"
 git -C "$root" merge-base --is-ancestor "$tagged" "${MAIN_REF:-origin/main}" || fail "tag $tag is not on ${MAIN_REF:-origin/main}"
-chart_version=$(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["version"]' "$dir/Chart.yaml")
+chart_version=$(node "$root/scripts/yaml-get.ts" "$dir/Chart.yaml" version)
 [ "$chart_version" = "$version" ] || fail "Chart.yaml version $chart_version does not match tag $tag"
 manifest_version=$(jq -r --arg p "charts/$chart" '.[$p] // empty' "$root/.release-please-manifest.json")
 [ "$manifest_version" = "$version" ] || fail "release manifest has '$manifest_version' for charts/$chart, tag is $tag"
-"$root/scripts/sync-app-version.sh" --check
+node "$root/scripts/sync-app-version.ts" --check
 
 scheme=https plain=()
 if [ "${PLAIN_HTTP:-0}" = 1 ]; then scheme=http plain=(--plain-http); fi
@@ -83,7 +84,7 @@ epoch=$(git -C "$root" log -1 --format=%ct "$tagged")
 SOURCE_DATE_EPOCH=$epoch "$HELM" package "$dir" --destination "$out" > /dev/null
 package=$out/$chart-$version.tgz
 [ -f "$package" ] || fail "helm package did not produce $chart-$version.tgz"
-ruby -e 't = Integer(ARGV[0]); File.utime(t, t, ARGV[1])' "$epoch" "$package"
+node -e 'const t = Number(process.argv[1]); require("node:fs").utimesSync(process.argv[2], t, t)' "$epoch" "$package"
 pushed=$(TZ=UTC "$HELM" push "$package" "oci://$registry/$namespace" ${plain[@]+"${plain[@]}"}) ||
   fail "helm push failed"
 echo "$pushed"

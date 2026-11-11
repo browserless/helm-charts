@@ -26,7 +26,7 @@ jobs:
   publish:
     # Release Please tags chart releases as <chart>-v<version>.
     if: contains(github.event.release.tag_name, '-v')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     # Add required reviewers to this environment to gate publication.
     environment: chart-release
@@ -41,16 +41,16 @@ jobs:
           ref: refs/tags/${{ github.event.release.tag_name }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          go-version: stable
-          cache: false
-      - name: Build the tools locked in tools/go.mod
-        run: scripts/build-tools.sh
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # Only the locked runtime dependency (yaml), without install scripts.
+      - run: npm ci --ignore-scripts --omit=dev
+      - name: Install Helm (version from tools/go.mod)
+        run: node scripts/install-tools.ts helm
       - name: Chart tests
-        run: ruby tests/chart_test.rb
-        env:
-          HELM: .bin/helm
+        run: npm test
       - name: Log in to GHCR
         env:
           ACTOR: ${{ github.actor }}

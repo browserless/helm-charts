@@ -18,7 +18,7 @@ jobs:
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: write
@@ -28,6 +28,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      # Only the locked runtime dependency (yaml), without install scripts.
+      - run: npm ci --ignore-scripts --omit=dev
       - name: Commit the matching appVersion
         id: sync
         env:
@@ -35,7 +41,7 @@ jobs:
         # The push is a fast-forward of that commit; if Dependabot has updated
         # the branch since, it is rejected and the newer commit's run syncs it.
         run: |
-          scripts/sync-app-version.sh
+          node scripts/sync-app-version.ts
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
