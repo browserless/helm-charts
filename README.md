@@ -111,8 +111,8 @@ permissions, admission policies, image pulls and the upgrade interruption.
 
 ## Development
 
-Needs Node.js 24.3 or later (CI uses the latest release of the major version in
-[`.nvmrc`](.nvmrc)), Docker, jq, OpenSSL and ShellCheck:
+Needs Node.js of the major version in [`.nvmrc`](.nvmrc) (CI uses its latest
+release), Docker, jq, OpenSSL and ShellCheck:
 
 ```sh
 npm ci

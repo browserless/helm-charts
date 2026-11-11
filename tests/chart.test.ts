@@ -1,7 +1,7 @@
 // Chart contract tests: schema validation, rendered defaults and overrides, the
-// entrypoint guards, the Kubernetes versions and runners CI tests, lint and
-// packaging. They do not prove that the container boots or that a browser
-// works; tests/e2e/kind.sh does. Needs Helm 4 (HELM, default .bin/helm).
+// entrypoint guards, the Kubernetes versions, runners and Node.js version CI
+// tests, lint and packaging. They do not prove that the container boots or that
+// a browser works; tests/e2e/kind.sh does. Needs Helm 4 (HELM, default .bin/helm).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
@@ -297,6 +297,18 @@ test('every workflow job runs on an Ubuntu 26.04 runner', () => {
       assert.ok(['ubuntu-26.04', '${{ matrix.runner }}'].includes(job['runs-on']), `${file} ${id} runs on ${job['runs-on']}`);
     }
   }
+});
+
+// Dependabot ignores major @types/node updates, so a change of the Node.js
+// major version in .nvmrc must also change engines and the types.
+test('.nvmrc, engines and @types/node name the same Node.js major version', () => {
+  const major = readFileSync(join(root, '.nvmrc'), 'utf8').trim();
+  assert.match(major, /^\d+$/);
+  const range = `>=${major} <${Number(major) + 1}`;
+  const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+  assert.equal(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).engines.node, range);
+  assert.equal(lock.packages[''].engines.node, range);
+  assert.equal(lock.packages['node_modules/@types/node'].version.split('.')[0], major);
 });
 
 test('lint, package contents and reproducibility, packaged and dependency rendering', () => {
