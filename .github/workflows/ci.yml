@@ -1,8 +1,10 @@
 name: CI
 
 # Static checks, then the runtime suite (tests/e2e/kind.sh) on disposable kind
-# clusters for both supported architectures and the oldest and newest qualified
-# Kubernetes versions. Nothing here publishes anything or uses repository secrets.
+# clusters: every Kubernetes minor version in tests/kind on both supported
+# architectures. The `kind` job passes only if all of those passed, so branch
+# protection requires `static` and `kind` whichever versions the matrix holds.
+# Nothing here publishes anything or uses repository secrets.
 
 on:
   pull_request:
@@ -21,49 +23,53 @@ concurrency:
 
 jobs:
   static:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          go-version: stable
-          cache-dependency-path: tools/go.sum
-      - name: Build the tools locked in tools/go.mod
-        run: scripts/build-tools.sh
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - name: Install Helm and actionlint (versions from tools/go.mod)
+        run: node scripts/install-tools.ts helm actionlint
       - name: Lint workflows and scripts
         run: |
           .bin/actionlint
           shellcheck scripts/*.sh tests/e2e/*.sh
-      - name: appVersion matches the default image tag
-        run: scripts/sync-app-version.sh --check
-      - name: Chart tests (schema, rendering, lint, package)
-        run: ruby tests/chart_test.rb
-        env:
-          HELM: .bin/helm
+      - name: Type-check
+        run: npm run typecheck
+      - name: Chart and script tests
+        run: npm test
 
-  kind:
+  e2e:
     needs: static
-    name: kind (${{ matrix.runner }}, Kubernetes ${{ matrix.kubernetes }})
+    name: e2e (${{ matrix.runner }}, Kubernetes ${{ matrix.kubernetes }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-        kubernetes: [oldest, latest]
+        runner: [ubuntu-26.04, ubuntu-26.04-arm]
+        # One entry per tests/kind/<minor> directory; the chart tests check this.
+        kubernetes: ['1.35', '1.36', '1.37']
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    outputs:
+      # Every leg that runs reports the matrix size; the kind job checks each leg.
+      legs: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          go-version: stable
-          cache-dependency-path: tools/go.sum
-      - name: Build the tools locked in tools/go.mod
-        run: scripts/build-tools.sh
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts --omit=dev
+      - name: Install Helm and kind (versions from tools/go.mod)
+        run: node scripts/install-tools.ts helm kind
       - name: Runtime tests on kind
         run: tests/e2e/kind.sh
         env:
@@ -82,3 +88,29 @@ jobs:
           path: ${{ runner.temp }}/e2e
           retention-days: 14
           if-no-files-found: warn
+
+  # The required runtime check. It always runs, and fails unless static and every
+  # e2e job succeeded, so a failed, cancelled or skipped job cannot pass it.
+  # GitHub can report a matrix as successful when a leg was cancelled before it
+  # got a runner, so it also checks each leg of this run attempt.
+  kind:
+    if: always()
+    needs: [static, e2e]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    steps:
+      - name: Require static and every e2e job to succeed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATIC: ${{ needs.static.result }}
+          E2E: ${{ needs.e2e.result }}
+          LEGS: ${{ needs.e2e.outputs.legs }}
+        run: |
+          echo "static: $STATIC, e2e: $E2E, legs: $LEGS"
+          [ "$STATIC" = success ] && [ "$E2E" = success ] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            --paginate --jq '.jobs[] | select(.name | startswith("e2e (")) | "\(.conclusion) \(.name)"' > legs
+          cat legs
+          [ "$(grep -c '^success ' legs)" -eq "$LEGS" ] && ! grep -qv '^success ' legs

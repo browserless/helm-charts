@@ -9,7 +9,7 @@ metadata:
     app.kubernetes.io/name: browserless
     app.kubernetes.io/instance: {{ .Release.Name | quote }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   strategy:
     type: Recreate
   selector:
@@ -121,3 +121,6 @@ spec:
           persistentVolumeClaim:
             claimName: {{ .Values.persistence.existingClaim | quote }}
         {{- end }}
+{{- if and (gt (int .Values.replicaCount) 1) .Values.persistence.existingClaim }}
+{{- fail "replicaCount above 1 cannot be combined with persistence.existingClaim: every replica would mount the same volume, and a browser profile supports one browser at a time" }}
+{{- end }}

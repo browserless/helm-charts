@@ -1,259 +1,316 @@
 # Browserless Helm chart
 
-A minimal, dependency-free chart for one public Browserless Chromium instance.
-Creates only a Deployment and ClusterIP Service. Requires Helm 4, a Linux
-amd64 or arm64 node, and sufficient CPU/memory. The chart declares
-`kubeVersion: >=1.25.0-0`; see [Compatibility](#compatibility) for the versions
-actually tested. Default image: `ghcr.io/browserless/chromium:v2.62.0` (the
-[v2.62.0 release](https://github.com/browserless/browserless/releases/tag/v2.62.0));
-`appVersion` always names the default image release.
+A minimal, dependency-free chart for Browserless Chromium: a Deployment of one
+or more identical instances and a ClusterIP Service. It needs Helm 4, Linux
+amd64 or arm64 nodes and a maintained Kubernetes version (see
+[Compatibility](#compatibility)). The
+default image is the `ghcr.io/browserless/chromium` release that `image.tag`
+names in [`values.yaml`](charts/browserless/values.yaml); the chart's
+`appVersion` always names the same release.
 
-## Install
+## Quick start
 
-Create a namespace and a Secret containing a strong, nonempty token (use a secret
-manager or a protected file; do not put the token in Helm values or source control).
-The following assumes `token.txt` contains only the token, without a trailing newline:
+> If the chart is not yet published or not accessible, use
+> [Install from a checkout](#install-from-a-checkout) for the install step
+> instead. After publication, verify the package is public for anonymous
+> installs.
+
+Needs Helm 4, kubectl with access to a cluster, OpenSSL and curl. Create a new
+namespace and a Secret holding a random token:
 
 ```sh
-kubectl create namespace browserless
-kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=token.txt
-helm upgrade --install browserless ./charts/browserless \
-  --namespace browserless --set token.existingSecret=browserless-token \
-  --wait --timeout 10m
-kubectl -n browserless port-forward service/browserless-browserless 3000:3000
+token=$(openssl rand -hex 24) && [ -n "$token" ] &&
+  kubectl create namespace browserless &&
+  printf %s "$token" |
+  kubectl -n browserless create secret generic browserless-token --from-file=TOKEN=/dev/stdin
+unset token
 ```
 
-No Secret is created by the chart. Missing references fail validation; nonexistent
-Secrets/keys prevent container startup. The token must be printable ASCII
-without whitespace: empty tokens, and tokens containing spaces, control or
-non-ASCII characters (such as a trailing newline), exit before startup because
-Bearer authentication and the readiness probe's HTTP header cannot carry them.
-`token.key` defaults to `TOKEN`. Secret rotation requires a pod restart because
-the token is read from the environment. Release names must start with a
-lowercase letter and contain only lowercase letters, digits and `-`.
+This stops at the first step that fails. If the namespace `browserless` already
+exists, it creates nothing: use another namespace name in every command here
+instead, so that the quick start and its removal touch only what it created.
+
+Install the chart:
+
+```sh
+helm install browserless oci://ghcr.io/browserless/charts/browserless \
+  --namespace browserless --set token.existingSecret=browserless-token \
+  --wait --timeout 10m
+```
+
+This installs the newest published version; add `--version` to choose one. For
+production, verify the chart and install it by digest (see [Releases](#releases)).
+
+In one terminal, forward a local port to the Service and leave it running:
+
+```sh
+kubectl -n browserless port-forward --address 127.0.0.1 \
+  service/browserless-browserless 3000:3000
+```
+
+If it stops because port 3000 is in use, do not send the request: whatever
+listens there would receive the token. Use another local port instead, such as
+`3001:3000`, in the port-forward and in the request's URL.
+
+In a second terminal, have Chromium render a page:
+
+```sh
+kubectl -n browserless get secret browserless-token \
+  -o go-template='Authorization: Bearer {{.data.TOKEN | base64decode}}' |
+  curl -fsS -H @- -H 'Content-Type: application/json' \
+    -d '{"html":"<p id=answer></p><script>answer.textContent = 6 * 7</script>"}' \
+    http://127.0.0.1:3000/chromium/content
+```
+
+It prints the page as Chromium rendered it, with `<p id="answer">42</p>`. The
+token goes from the Secret straight to curl's standard input, so it is in no
+file and not in curl's command line, which other users of the machine can
+list. Without the token, Browserless answers 401 and curl reports an error.
+
+To remove it, stop the port-forward with Ctrl-C, then:
+
+```sh
+helm uninstall browserless --namespace browserless
+kubectl -n browserless delete secret browserless-token
+```
+
+The quick start created the namespace `browserless`; once nothing else uses it,
+also run `kubectl delete namespace browserless`.
+
+Keep real tokens in a secret manager or a protected file, never in Helm values
+or source control; the chart only reads the Secret and creates none. The token
+must be nonempty printable ASCII without whitespace; otherwise the container
+exits 2 before starting, because Bearer authentication and the readiness probe
+cannot carry it. A missing Secret or key keeps the container from starting.
+`token.key` defaults to `TOKEN`. Rotating the token needs a pod restart. Release
+names must start with a lowercase letter and contain only lowercase letters,
+digits and `-`.
+
+### Install from a checkout
+
+Before the first release, or to try unreleased changes, create the Secret as
+above and install the chart from a clone instead:
+
+```sh
+git clone https://github.com/browserless/helm-charts.git
+helm install browserless ./helm-charts/charts/browserless \
+  --namespace browserless --set token.existingSecret=browserless-token \
+  --wait --timeout 10m
+```
 
 ## Configuration and limits
 
-See `charts/browserless/values.yaml` for the complete surface. Unsupported keys
-are rejected; Helm's `global` values are accepted so the chart can be used as a
-dependency. Set `image.repository`, `image.tag`, or `image.digest`; a nonempty
-SHA-256 digest takes precedence over the tag. Custom images must preserve the
-upstream Node runtime, working directory and `./scripts/start.sh` entrypoint.
+[`values.yaml`](charts/browserless/values.yaml) is the complete surface; other
+keys are rejected, except Helm's `global`, so the chart also works as a
+dependency.
 
-`concurrent`, `queued` and `timeout` set the image's `CONCURRENT`, `QUEUED`
-and `TIMEOUT` (milliseconds) and default to the image's own values: 10 running
-browsers, 10 queued requests and 30000 ms. They must be at least 1, 0 and 1 ms
-respectively: the image's unlimited settings (`-1`, `Infinity`) and its
-disabled timeout (`0` or less) are unsupported. Requests beyond `concurrent` +
-`queued` get 429. Resources default to requests of 500m CPU/1Gi memory and
-limits of 2 CPU/2Gi. These defaults are not sized against each other: ten real
-pages can exceed 2Gi, and on cgroup v2 an out-of-memory kill stops the whole
-container and every session, while `/pressure` reports memory saturation only
-at 99% of the limit. Size `resources.limits.memory` for `concurrent` browsers
-of your workload, or lower `concurrent`. The saturation checks below used idle
-browsers and prove admission behaviour, not memory capacity. `/dev/shm` is a
-memory-backed emptyDir capped at 1Gi; used space consumes the memory budget.
-Quantities accept Kubernetes suffixes or plain numbers, so
-`--set resources.limits.cpu=2` works.
+- **Image:** a nonempty `image.digest` replaces the tag. Custom images must keep
+  the upstream Node runtime, working directory and `./scripts/start.sh`.
+- **Admission:** `concurrent`, `queued` and `timeout` (milliseconds) set the
+  image's `CONCURRENT`, `QUEUED` and `TIMEOUT` and default to its own values.
+  They must be at least 1, 0 and 1; unlimited or disabled settings are not
+  supported. Requests beyond `concurrent` + `queued` get 429.
+- **Memory:** the default resources are not sized for `concurrent` real pages.
+  An out-of-memory kill stops the container and every session, and `/pressure`
+  reports memory saturation only at 99% of the limit, so size
+  `resources.limits.memory` for your workload or lower `concurrent`. `/dev/shm`
+  is a memory-backed emptyDir (`shmSizeLimit`) that counts toward that budget.
+- **Persistence:** `persistence.existingClaim` mounts an existing PVC at
+  `persistence.mountPath`; clients choose profile directories such as
+  `--user-data-dir=/data/<profile>`. The default `fsGroup: 999` makes most block
+  volumes writable by the browser user. Volumes that ignore `fsGroup` (hostPath,
+  many NFS and some CSI drivers) must already be writable by UID 999, or the
+  container exits 2 instead of silently losing profiles. Do not mount it over
+  the application, home, temporary or shared-memory paths (`/usr/src/app`,
+  `/home/blessuser`, `/tmp`, `/dev/shm`). One profile supports one browser at a
+  time, and a browser killed abruptly leaves `Singleton*` lock files that a
+  replacement pod cannot get past until they are removed. A volume needs
+  `replicaCount: 1` (see [Replicas](#replicas)).
+- **Cookies:** in tests, cookies changed less than about 30 s before a session
+  ended were missing from the profile afterwards (Chromium writes them on a
+  timer), so keep a session open at least 30 s after changes that must
+  persist. The default `timeout` ends sessions after 30 s; raise it or pass
+  `&timeout=<ms>` when connecting.
+- **Security:** the defaults meet the restricted Pod Security Standard (UID 999,
+  no privilege escalation, no capabilities, runtime-default seccomp) and mount no
+  service-account token. The root filesystem stays writable for Chromium. The
+  chart sets `DEBUG` without debug-level logs, which print launch options
+  including `TOKEN`.
+- **Updates:** the Deployment uses Recreate: an upgrade that changes the pods
+  stops all of them before starting new ones, so it interrupts service and can
+  end active sessions, and a failed upgrade (for example an unpullable image)
+  leaves no ready pod until a rollback. Check that a new image exists for your
+  nodes' architecture first. Upgrade with all your values every time, for example the same values file (`-f`): an upgrade that
+  passes any `--set` or `-f` resets every value it omits to the chart default,
+  so one that sets only the token Secret drops `persistence.existingClaim`. A
+  values file that sets `image.digest` or `image.tag` keeps that image across
+  chart upgrades. There is no draining, autoscaling, Ingress, TLS or
+  NetworkPolicy, and no claim of high availability or tenant isolation.
 
-`persistence.existingClaim` optionally mounts an existing same-namespace PVC at
-`persistence.mountPath` (default `/data`). The chart does not provision storage
-or configure browser profiles to use it; clients choose a profile directory such
-as `--user-data-dir=/data/<profile>`. The default `fsGroup: 999` makes volumes
-whose root is owned by root writable by the browser user; keep it unless your
-storage handles ownership itself. Some volumes ignore `fsGroup` (CSI drivers
-with `fsGroupPolicy: None`, many NFS volumes, hostPath): if UID 999 cannot write
-the mount path, the container exits 2 with `persistence volume ... is not
-writable`, instead of running with profiles that are silently not saved. Do not
-mount over application, home, temporary, or shared-memory paths.
+### Replicas
 
-Chromium releases a profile cleanly when its session ends or when the pod stops
-normally. If Chromium is killed (out of memory, node loss), its `Singleton*`
-lock files remain and a replacement pod, which has a different hostname, cannot
-open that profile until they are removed. One profile directory supports one
-browser at a time.
+`replicaCount` (default 1) runs that many identical, independent instances
+behind the Service. Change it with the chart version (or digest) and all the
+values you installed with. Otherwise Helm takes the newest chart, which can
+bring another image, and resets the values you leave out to their defaults; if
+either changes the pods, every pod is replaced (see Updates above). For the
+quick start's release, with `0.1.0` replaced by the `VERSION` that
+`helm get metadata browserless --namespace browserless` shows:
 
-Recent cookie changes can be lost when a session ends. With both v2.61.0 and
-v2.62.0, a cookie set and then closed within 10 s was missing from the profile
-afterwards, even in the same container; a cookie whose session stayed open for
-30 s or more was kept, also across pod replacement. This matches Chromium
-committing cookies to disk on a timer (about 30 s) rather than at session end.
-Keep a session open for at least 30 s after changes that must persist. The
-default `timeout` of 30000 ms ends every session 30 s after it starts, so a
-change made during a session is likely lost: raise `timeout`, or add
-`&timeout=<ms>` to the connection URL, so that it covers the last change plus
-30 s.
+```sh
+helm upgrade browserless oci://ghcr.io/browserless/charts/browserless \
+  --version 0.1.0 --namespace browserless \
+  --set token.existingSecret=browserless-token --set replicaCount=2 \
+  --wait --timeout 10m
+```
 
-Placement supports `nodeSelector`, `tolerations`, and `affinity`. Security
-defaults satisfy the restricted Pod Security Standard: UID 999 (the image's
-`blessuser`), no privilege escalation, all capabilities dropped and the
-runtime-default seccomp profile. The root filesystem stays writable for
-Chromium/Xvfb temporary files. No Kubernetes service-account token is mounted.
+If you installed by digest as in [Releases](#releases), put the same
+`"$CHART@$DIGEST"` reference in place of the chart name and leave out
+`--version`; if you installed from a checkout, put the same checkout's chart
+directory there instead, such as `./helm-charts/charts/browserless`.
 
-The chart sets `DEBUG` to the image's default minus `debug`-level logs, because
-v2.61.0 and v2.62.0 debug logs print browser launch options, including `TOKEN`
-(with the image's default `DEBUG`, a v2.62.0 container logged the token three
-times; with the chart's, never). Custom images must not rely on overriding
-`DEBUG` through the chart.
-
-Exactly one replica, with **Recreate** updates: upgrades interrupt service and
-may terminate active sessions. No zero-downtime, session draining, autoscaling,
-Ingress/TLS, public exposure, NetworkPolicy, or controller integration is provided.
-Use the same install command to upgrade (retain your values explicitly). This
-chart does not claim high availability or suitability for untrusted tenants.
-
-A failed upgrade is an outage, not a no-op: Recreate stops the only pod before
-the new one starts. With an unpullable image tag, the service has no ready
-endpoint until `--wait` reaches its `--timeout` and then until a `helm rollback`
-finishes; `--rollback-on-failure` automates the rollback but not the wait (about
-67 s without a ready endpoint in the kind test). Before upgrading, check that
-the new image reference exists for your nodes' architecture, for example with
-`docker manifest inspect` or by pulling it on a node.
+- Kubernetes sends each new connection to one ready pod, without regard to its
+  load or queue. Everything on that connection stays on that pod: a WebSocket
+  session for its whole life, and every request on a reused keep-alive
+  connection. Clients spread work across pods only by opening new connections.
+- The pods share nothing. `concurrent` and `queued` apply to each pod, and a
+  browser or session exists only on the pod that started it, so reconnecting to
+  an existing browser through the Service is not supported; there is no session
+  stickiness.
+- Readiness takes a saturated pod out of the Service at its next check, up to
+  10 s later, plus the time the Service takes to update; until then the pod can
+  still receive new connections. After that, new connections go to the other
+  pods, while the connections it already accepted normally continue.
+- `persistence.existingClaim` must be empty above one replica, and the chart
+  refuses to render otherwise: every replica would mount the same volume, and a
+  browser profile supports one browser at a time, also on a ReadWriteMany
+  volume.
+- Changing only `replicaCount` adds or removes pods without restarting the
+  others; sessions on a removed pod are not moved or drained. An upgrade that
+  changes the pods stops every replica first (see Updates above).
 
 ## Probes
 
-Readiness runs Node inside the container and calls authenticated `/pressure`
-with exactly `Accept: text/plain`: available returns 200, saturation returns 503.
-The default JSON response returns 200 even when unavailable and must not be used
-as an HTTP-status readiness check. Startup/liveness use TCP only, never pressure:
-load must remove the instance from service, not cause restarts. TCP liveness does
-not detect every application-level hang. With one replica, saturation can leave
-the Service with no ready endpoints; clients must retry appropriately.
-
-Semantics verified against upstream
-[`v2.62.0` pressure route](https://github.com/browserless/browserless/blob/v2.62.0/src/routes/management/http/pressure.get.ts),
-[authentication helpers](https://github.com/browserless/browserless/blob/v2.62.0/src/utils.ts),
-and [image source](https://github.com/browserless/browserless/tree/v2.62.0/docker).
-
-## Verify
-
-Static checks (the CI `static` job) need Go, Ruby's standard library and
-ShellCheck. `scripts/build-tools.sh` builds Helm, kind and actionlint into
-`.bin/` at exactly the versions locked in `tools/go.mod` and `tools/go.sum`,
-and fails unless each binary embeds that locked module and Helm is major
-version 4:
-
-```sh
-scripts/build-tools.sh
-HELM=.bin/helm ruby tests/chart_test.rb
-scripts/sync-app-version.sh --check
-.bin/actionlint && shellcheck scripts/*.sh tests/e2e/*.sh
-```
-
-The chart tests check default and custom values, invalid types and missing
-authentication, digest precedence, that `appVersion` names the default image
-tag, release isolation, probe wiring, `helm lint --strict`, package contents
-and reproducibility, and rendering the packaged chart on its own and as a
-dependency of another chart. They do not prove that the container boots or that
-a real browser works.
-
-Runtime tests (the CI `kind` job) run `tests/e2e/kind.sh`, which creates a
-disposable kind cluster, installs the working-tree chart into a namespace that
-enforces the restricted Pod Security Standard, and checks: the pod runs the
-default image and the release reports the chart's `appVersion`; real Chromium
-HTML rendering and screenshots with the token, 401 without it, through the pod
-and the Service; a browser profile on a PVC keeps its cookie across pod
-replacement; with `concurrent=1 queued=1`, two held sessions make an extra
-request get 429 and `/pressure` 503, remove the only ready endpoint without
-restarting the pod, and restore it when the sessions end; `helm rollback`
-restores the previous settings and the profile; empty and non-ASCII tokens and
-an unwritable volume stop the container with exit 2, and a missing Secret keeps
-it from starting; the token never appears in any container log; and uninstall
-removes the chart's objects but keeps the PVC. With `UPGRADE_FROM` set to an
-earlier chart, it first installs that chart and checks that the upgrade never
-runs two browser containers at once. It needs Docker, jq, OpenSSL, Perl and
-Ruby:
-
-```sh
-scripts/build-tools.sh
-tests/e2e/kind.sh                                         # newest tested Kubernetes
-KIND_CONFIG=tests/kind/oldest/cluster.yaml tests/e2e/kind.sh
-UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
-```
-
-The script always deletes its cluster (unless `KEEP_CLUSTER=1`), writes its log
-and diagnostics to `tests/e2e/out/`, replaces the generated token there with
-`<redacted>` and fails if any copy remains. The saturation checks use idle
-browsers and prove admission behaviour, not memory capacity.
+Readiness runs Node in the container against authenticated `/pressure` with
+`Accept: text/plain`, which returns 503 when saturated (its JSON form returns 200
+either way). Startup and liveness only check TCP, so load takes the pod out of
+the Service instead of restarting it. While no pod is ready (with one replica,
+whenever it is saturated), clients must retry.
+A port-forward connects to the pod even while it is not ready; check the
+Service's EndpointSlices to see whether it routes to the pod.
 
 ## Compatibility
 
-`kubeVersion: >=1.25.0-0` in `Chart.yaml` only blocks installation on older
-clusters; it is not a statement that every later version was tested. CI runs
-the runtime tests on Linux amd64 and arm64 against two kind node images:
-`tests/kind/oldest` (Kubernetes 1.34) and `tests/kind/latest` (Kubernetes
-1.37). Kubernetes 1.25 to 1.33 are accepted by the chart but untested. The
-chart with image v2.62.0 also ran on a managed Kubernetes 1.36 cluster (amd64
-nodes, network block storage): install under the namespace's admission policy,
-browser smoke test, volume writes, a profile cookie kept after the pod moved to
-another node, and saturation removing and restoring the ready endpoint without
-a restart. Before production use,
-repeat the checks below in the target environment and verify PVC permissions,
-admission policies, image architecture and pull availability, and acceptable
-upgrade interruption. This is not production capacity, memory sizing or
-high-availability qualification.
+The chart supports the Kubernetes minor versions that the Kubernetes project
+currently [maintains](https://kubernetes.io/releases/). Kubernetes has no
+long-term-support releases: it maintains the three newest minor versions, each
+for about a year. `kubeVersion` in [`Chart.yaml`](charts/browserless/Chart.yaml)
+admits exactly those minor versions, and CI runs the runtime tests on each of
+them on amd64 and arm64, with the kind node images published for the kind
+release in [`tools/go.mod`](tools/go.mod) (see
+[kind releases](https://github.com/kubernetes-sigs/kind/releases)). The tested
+versions are the directories in [`tests/kind`](tests/kind) and the `e2e` matrix
+in [`ci.yml`](.github/workflows/ci.yml); the chart tests fail unless these and
+`kubeVersion` agree. The `-0` suffixes in `kubeVersion` admit vendor builds such
+as `-gke.N`, which semver reads as pre-releases.
+
+When a new Kubernetes minor version is released and kind publishes a node image
+for it, add its `tests/kind/<minor>` directory and matrix entry and raise the
+`kubeVersion` ceiling; when a minor version reaches end of life, remove it and
+raise the floor. Each such change is a chart release.
+
+kind clusters do not stand in for every environment: before production use,
+repeat the checks below where the chart will run, including storage
+permissions, admission policies, image pulls and the upgrade interruption.
+
+## Development
+
+Needs Node.js of the major version in [`.nvmrc`](.nvmrc) (CI uses its latest
+release), Docker, jq, OpenSSL and ShellCheck:
+
+```sh
+npm ci
+node scripts/install-tools.ts            # Helm, kind and actionlint into .bin/
+npm run typecheck && npm test            # the CI static job, with the two lines below
+.bin/actionlint
+shellcheck scripts/*.sh tests/e2e/*.sh
+tests/e2e/kind.sh                         # newest tests/kind version
+KIND_CONFIG=tests/kind/<minor>/cluster.yaml tests/e2e/kind.sh
+UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
+```
+
+`npm test` runs the chart tests (schema, defaults and overrides, entrypoint
+guards, Kubernetes and runner coverage, lint, package contents and
+reproducibility, use as a dependency) and the tool installer's tests. Node runs
+the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
+are third-party code, so jobs that can push, publish, sign or read an
+environment's secrets install none and run only scripts that import Node
+built-ins. A chart test checks the common ways this could regress; it is not a
+complete security analysis of the workflows.
+
+`tests/e2e/kind.sh` (the CI `e2e` jobs) installs the working tree on a
+disposable kind cluster under the restricted Pod Security Standard and checks
+real browser requests and authentication through the pod and the Service, a
+profile on a PVC surviving pod replacement and rollback, saturation removing the
+only endpoint without a restart and capacity restoring it, the token and volume
+guards, that the token never reaches a log, a second release scaled 1 → 2 → 1
+whose Service selects only its own pods and sends new connections, both
+requests and WebSocket sessions, to each of its two pods, uninstall keeping the
+PVC, and with `UPGRADE_FROM` an upgrade that never runs two browsers at once.
+It deletes its cluster unless `KEEP_CLUSTER=1` and writes redacted diagnostics
+to `tests/e2e/out/`. Its sessions are idle: it shows admission behaviour, not
+memory capacity.
+
+### Tools
+
+[`tools/`](tools) is not a Go program. Its `go.mod` is the list of Helm, kind and
+actionlint versions, kept there because Dependabot updates Go modules;
+nothing builds it, and you do not need Go. `scripts/install-tools.ts` downloads
+each version's official release binary for the current platform and refuses it
+unless its SHA-256 matches the checksum file published with the same release.
+That proves integrity, not authenticity: a release whose binary and checksum file
+were both replaced would pass, and `tools/go.sum`, which Dependabot maintains,
+does not attest the binaries.
 
 ## Releases
 
-Pull request titles must be Conventional Commits (checked by `pr-title.yml`);
-squash merges make them the commit subjects that
-[Release Please](https://github.com/googleapis/release-please), configured in
-`release-please-config.json`, reads. This needs the repository's squash merge
-commit title set to the pull request title (`squash_merge_commit_title=PR_TITLE`)
-and its message left blank (`squash_merge_commit_message=BLANK`). GitHub's
-default title is the commit message of a single-commit pull request, which the
-title check does not see, and its default message copies every commit message
-into the body, where a stale `BREAKING CHANGE:` footer would raise the major
-version. Mark a breaking change only with `!` in the title, for example
-`feat!: remove a setting`; a footer in the pull request body is not carried into
-the squash commit. Release Please keeps one draft release pull request per chart
-that sets `Chart.yaml` `version`, `charts/<chart>/CHANGELOG.md` and
-`.release-please-manifest.json`. `feat` raises the minor version, a breaking
-change the major version, and `fix`, `perf`, `revert` and `build` the patch
-version; `chore`, `ci`, `docs`, `style`,
-`refactor` and `test` do not release. Dependabot's image updates are `build`
-commits, so a new Browserless image becomes a patch release whose `appVersion`
-names that image.
+Pull requests are squash-merged with the pull request title as the commit
+subject and a blank body (`squash_merge_commit_title=PR_TITLE`,
+`squash_merge_commit_message=BLANK`), and titles must be Conventional Commits
+(`pr-title.yml`). [Release Please](https://github.com/googleapis/release-please)
+reads them: `feat` raises the minor version; `fix`, `perf`, `revert` and `build`
+the patch version; `chore`, `ci`, `docs`, `style`, `refactor` and `test` release
+nothing. Mark a breaking change with `!` in the title (`feat!: ...`), which
+raises the major version; footers in the body are not kept. Dependabot's image
+updates are `build` commits, so a new Browserless image is a patch release.
 
-Merging a release pull request creates the tag `<chart>-v<version>` (for
-example `browserless-v0.1.0`) and its GitHub Release. Only then does
-`publish.yml` run: from the tag, it repeats the chart tests and runs
-`scripts/publish-chart.sh`, which refuses unless the checkout is exactly the
-tag, the tag is on `main`, and `Chart.yaml`, the release manifest and
-`appVersion` agree. It refuses to overwrite a version the registry already
-holds, packages reproducibly, pushes to
-`oci://ghcr.io/browserless/charts/browserless` and pulls the chart back to
-compare it byte for byte and check that the version resolves to the manifest
-digest it pushed. File times and the manifest's creation time come from the
-tag's commit, so the package and the manifest digest can be rebuilt from the
-tag. The job then records a signed SLSA provenance attestation for that
-manifest digest (also pushed to the registry) and verifies it, and its summary
-shows the digest. The release notes do not, because editing the release would
-need `contents: write` in the publish job. Creating the release pull request
-never publishes.
+Release Please keeps a draft release pull request per chart that sets
+`Chart.yaml` `version`, the chart's `CHANGELOG.md` and
+`.release-please-manifest.json`. Merging it creates the tag `<chart>-v<version>`
+and its GitHub Release, which starts `publish.yml`. From the tag, a job without
+write access repeats the chart tests and checks `appVersion`. The publishing
+job then runs `scripts/publish-chart.sh`, which refuses unless the checkout is
+the tag, the tag is on `main`, and the chart version and manifest agree. It
+refuses to overwrite an existing version, packages reproducibly (times come
+from the tag's commit), pushes to `oci://ghcr.io/browserless/charts/browserless`,
+and pulls the chart back to compare bytes and digest. The job then records a
+signed SLSA provenance attestation for the pushed manifest digest and verifies
+it.
 
 If `publish.yml` fails before its push, rerun it. If it fails during or after
-the push, for example in the attestation or verification step, or a rerun is
-refused because the version already exists, that version is in the registry
-without verified provenance. Treat it as failed: do not use, delete or
-overwrite it, and do not describe it as verified; its tag cannot be reused.
-Note in its GitHub Release that it must not be used, fix the cause, and release
-the next patch version: merge a `fix:` pull request that changes
-`charts/browserless` (Release Please releases a chart only for a releasable
-commit in its directory, so a workflow-only `ci:` fix releases nothing), then
-merge the release pull request it opens.
+the push, or a rerun finds the version already exists, treat that version as
+failed: do not use, delete, overwrite or describe it as verified, note this in
+its GitHub Release, and release the next patch version with a `fix:` pull request
+that changes `charts/browserless` (a `ci:` change releases nothing).
 
-The registry alone does not prove where a chart came from. `chart-release`
-approval gates only `publish.yml`: anyone with write access to this repository
-can push a workflow on another branch whose `GITHUB_TOKEN` can write its
-packages, including an existing version, and the registry does not prevent
-overwrites. Only a digest whose attestation was signed by `publish.yml` for the
-version's tag identifies a published chart. Resolve the version's digest once,
-verify that digest, and install by the same digest, never by the version tag,
-which can change in between:
+The registry alone does not prove where a chart came from: anyone with write
+access to this repository can push packages with a workflow's `GITHUB_TOKEN`.
+Only a digest whose attestation `publish.yml` signed for the version's tag
+identifies a published chart. Resolve the digest once, verify it, and install
+that digest, not the version tag:
 
 ```sh
-CHART=oci://ghcr.io/browserless/charts/browserless VERSION=0.1.0
+CHART=oci://ghcr.io/browserless/charts/browserless VERSION=<version>
 DIGEST="$(helm pull "$CHART" --version "$VERSION" --destination "$(mktemp -d)" |
   sed -n 's/^Digest: //p')" &&
 [ -n "$DIGEST" ] &&
@@ -265,106 +322,49 @@ helm upgrade --install browserless "$CHART@$DIGEST" \
   --wait --timeout 10m
 ```
 
-The manifest starts empty, so the first release pull request proposes the
-initial version 0.1.0. Chart version 0.1.0 has not been published; its contents
-changed during review, so packages built locally before its release carry the
-same version with different contents and must not be distributed. Once a
-version is published, every change needs a new version, which the next release
-pull request provides.
+### Repository settings
 
-Before the first push, the repository needs the following. A workflow that
-names a missing environment creates it without any protection, so create both
-environments first.
-
-- A `release-please` environment whose deployments are limited to the `main`
-  branch, without administrator bypass, holding a GitHub App's client ID in the
-  `RELEASE_APP_CLIENT_ID` variable and its private key in the
-  `RELEASE_APP_PRIVATE_KEY` secret. The App needs Contents, Pull requests and
-  Issues read and write access. `release-please.yml` fails without them rather
-  than falling back to `GITHUB_TOKEN`, whose release pull requests and releases
-  would not trigger CI or publishing. Any code that runs in that job on `main`,
-  such as a merged workflow or action change, can read the key, so the
-  environment is only as strong as the `main` ruleset below, which decides who
-  can change that code.
+- A `release-please` environment limited to `main`, without administrator
+  bypass, holding the release GitHub App's client ID (`RELEASE_APP_CLIENT_ID`
+  variable) and private key (`RELEASE_APP_PRIVATE_KEY` secret). The App needs
+  Contents, Pull requests and Issues write access. `release-please.yml` fails
+  without them instead of falling back to `GITHUB_TOKEN`, whose pull requests
+  and releases would trigger no workflows. Code that runs in that job on `main`
+  can read the key, so the `main` ruleset decides who controls it.
 - A `chart-release` environment with required reviewers, without administrator
-  bypass, whose deployments are limited to tags matching `browserless-v*`. This
-  is a single-person gate: the release App, not a person, starts the
-  deployment, so preventing self-review does not stop whoever merged the release
-  pull request from approving its publication.
-- Two tag rulesets for `browserless-v*`: one that lets only the release App
-  create these tags, and one without exceptions that blocks updating and
-  deleting them.
-- A ruleset for `main`, added after the first push, that requires pull requests
-  with one approving review and approval of the most recent reviewable push, and
-  the checks `static`, `kind (ubuntu-24.04, Kubernetes oldest)`,
-  `kind (ubuntu-24.04, Kubernetes latest)`,
-  `kind (ubuntu-24.04-arm, Kubernetes oldest)` and
-  `kind (ubuntu-24.04-arm, Kubernetes latest)` from GitHub Actions, allows
-  squash merging only, and blocks force pushes and deletion.
-- Workflow `GITHUB_TOKEN` permissions defaulting to read, and GitHub Actions not
-  allowed to approve pull requests.
+  bypass, limited to `browserless-v*` tags. It is a single-person gate: the App
+  starts the deployment, so preventing self-review does not stop whoever merged
+  the release pull request from approving its publication.
+- Tag rulesets for `browserless-v*`: only the release App may create these tags,
+  and nobody may update or delete them.
+- A `main` ruleset requiring pull requests with one approving review and
+  approval of the most recent push, the GitHub Actions checks `static` and
+  `kind`, squash merging only, and no force pushes or deletion. `kind` fails
+  unless every `e2e` job passed, so the required checks stay the same when the
+  tested Kubernetes versions change.
+- Workflow `GITHUB_TOKEN` permissions default to read, GitHub Actions cannot
+  approve pull requests, and workflows from all outside contributors need
+  approval.
 
-This repository uses the `browserless-actions-bot` App that
-`browserless/browserless` also releases with, not an App of its own. Each token
-`release-please.yml` creates is limited to this repository and to the three
-permissions above, but the App's keys are not: any of them, including the one
-`browserless/browserless` stores, can create tokens for every repository the
-App is installed on, with all of the App's permissions. These include writing
-Actions, Actions secrets and environment secrets and variables, and creating
-`browserless-v*` tags here, so anyone or anything that can read one of those
-keys can start a release of this chart. The App has no Administration
-permission, so it cannot change rulesets, and the `chart-release` reviewers
-still decide whether a release is published.
-
-After the first publish, set the GHCR package's visibility to public.
+The release App is `browserless-actions-bot`, which `browserless/browserless`
+also releases with. Each token `release-please.yml` creates is limited to this
+repository and three permissions, but the App's keys are not: any of its keys,
+wherever stored, can create tokens for every repository the App is installed on
+with all its permissions, including Actions, secrets and environments, and
+creating `browserless-v*` tags here. The App cannot change rulesets, and the
+`chart-release` reviewers still decide what is published. After the first
+publish, make the GHCR package public.
 
 ## Dependency updates
 
-Dependabot (`.github/dependabot.yml`) updates every pinned version CI uses
-through ecosystems it supports natively:
-
-| What | File | Ecosystem | Commit type |
-| --- | --- | --- | --- |
-| Browserless image (`image.tag`) and any chart dependencies | `charts/browserless/values.yaml`, `Chart.yaml` | `helm` | `build` (patch release) |
-| Workflow actions, pinned by commit | `.github/workflows/*.yml` | `github-actions` | `ci` |
-| Helm CLI, kind CLI, actionlint | `tools/go.mod`, `tools/go.sum` | `gomod` | `ci` |
-| Kubernetes node images | `tests/kind/*/cluster.yaml` | `docker` | `ci` |
-
-Dependabot does not update `appVersion`; `dependabot-app-version.yml` commits
-the matching `appVersion` to Dependabot's image pull requests and starts CI for
-that commit (pushes made with `GITHUB_TOKEN` trigger no workflows). CI on
-Dependabot's own commit fails the `appVersion` check until then. The PR title
-check does not run again for the new commit, so require only the `static` and
-`kind` checks in branch protection, or re-run the title check by editing the
-title. Dependabot stops rebasing a pull request that has commits from others;
-`@dependabot recreate` drops the sync commit and the workflow adds it again.
-The oldest node image only receives patch updates; raise its minor version
-deliberately. A new node image that the pinned kind release cannot start fails
-CI, so that update waits for the matching kind update. The tools are imported in
-`tools/tools.go` rather than listed with Go's `tool` directive, which Dependabot
-does not update. Not covered: the Go toolchain (CI uses the latest stable Go),
-the runner's Ruby, ShellCheck, Perl and jq, and kubectl, which runs inside the
-kind node and follows its image.
-
-## Smoke test after installation
-
-After installation and port-forwarding, run:
-
-```sh
-TOKEN="$(cat token.txt)"
-# Expect 401 without authentication:
-curl -sS -o /dev/null -w '%{http_code}\n' http://localhost:3000/pressure
-# Expect 200 when idle (503 when capacity or resource thresholds are exceeded):
-curl -i -H "Authorization: Bearer $TOKEN" -H 'Accept: text/plain' \
-  http://localhost:3000/pressure
-# Exercise a real browser without external website access:
-curl --fail-with-body -H "Authorization: Bearer $TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data '{"html":"<html><body><h1>Browserless works</h1></body></html>"}' \
-  http://localhost:3000/screenshot -o /tmp/browserless-smoke.png
-file /tmp/browserless-smoke.png
-unset TOKEN
-```
-
-Port-forward connects directly to a pod; inspect EndpointSlices separately to
-verify Service endpoint removal.
+Dependabot ([`.github/dependabot.yml`](.github/dependabot.yml)) proposes updates
+for the default image (`helm`, as `build` commits), workflow actions, Helm,
+kind and actionlint (`gomod`, through `tools/go.mod`), the scripts' npm packages
+and the kind node images (patch and digest updates only). It does not update
+`appVersion`: `dependabot-app-version.yml` commits the matching `appVersion` to
+Dependabot's image pull requests and starts CI for that commit. The PR title
+check does not run again for it, which is why branch protection requires only
+`static` and `kind`. `@dependabot recreate` drops the sync commit, and the
+workflow adds it again. A node image that the pinned kind release cannot start
+fails CI until kind is updated. Not covered: the Node.js patch release, and the
+runner's ShellCheck, jq, OpenSSL and Docker; kubectl runs inside the kind node.

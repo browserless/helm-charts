@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "token", "service", "concurrent", "queued", "timeout", "resources", "shmSizeLimit", "persistence", "imagePullSecrets", "nodeSelector", "tolerations", "affinity", "podSecurityContext", "securityContext"],
+  "required": ["image", "token", "service", "replicaCount", "concurrent", "queued", "timeout", "resources", "shmSizeLimit", "persistence", "imagePullSecrets", "nodeSelector", "tolerations", "affinity", "podSecurityContext", "securityContext"],
   "definitions": {
     "name": {"type": "string", "minLength": 1, "maxLength": 253, "pattern": "^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$"},
     "quantity": {"anyOf": [
@@ -11,8 +11,11 @@
     ]},
     "resourceList": {"type": "object", "additionalProperties": false, "properties": {"cpu": {"$ref": "#/definitions/quantity"}, "memory": {"$ref": "#/definitions/quantity"}, "ephemeral-storage": {"$ref": "#/definitions/quantity"}}}
   },
+  "if": {"required": ["replicaCount"], "properties": {"replicaCount": {"minimum": 2}}},
+  "then": {"properties": {"persistence": {"properties": {"existingClaim": {"const": ""}}}}},
   "properties": {
     "global": {"type": "object"},
+    "replicaCount": {"type": "integer", "minimum": 1},
     "concurrent": {"type": "integer", "minimum": 1},
     "queued": {"type": "integer", "minimum": 0},
     "timeout": {"type": "integer", "minimum": 1},

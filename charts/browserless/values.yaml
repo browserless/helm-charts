@@ -14,6 +14,11 @@ token:
 service:
   port: 3000
 
+# Identical, independent instances behind the Service. Each new connection goes
+# to one ready pod; sessions stay on their pod and are not shared or routed
+# between pods. Above 1, persistence.existingClaim must be empty.
+replicaCount: 1
+
 # Admission limits, passed to the image as CONCURRENT, QUEUED and TIMEOUT
 # (milliseconds). The defaults equal the image's own defaults. Every running
 # session is a browser: size resources.limits.memory for `concurrent` browsers

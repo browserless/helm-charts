@@ -2,9 +2,10 @@
 # Runtime tests for charts/browserless on a disposable kind cluster. CI runs this
 # script unchanged; run it locally the same way (see the README).
 #
-# Needs docker, jq, openssl, perl and ruby, plus the Helm 4 and kind binaries
-# from scripts/build-tools.sh (override with HELM= and KIND=). Environment:
-#   KIND_CONFIG   kind cluster config (default tests/kind/latest/cluster.yaml)
+# Needs docker, jq, openssl and Node with the `npm ci` dependencies, plus the
+# Helm 4 and kind binaries from scripts/install-tools.ts (override with HELM=
+# and KIND=). Environment:
+#   KIND_CONFIG   kind cluster config (default: the newest tests/kind version)
 #   CLUSTER_NAME  kind cluster name (default browserless-e2e-<random>)
 #   E2E_OUT       log and redacted diagnostics (default tests/e2e/out/<cluster>)
 #   UPGRADE_FROM  optional chart reference to install first, then upgrade from
@@ -16,7 +17,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/../.." && pwd)
 HELM=${HELM:-$root/.bin/helm}
 KIND=${KIND:-$root/.bin/kind}
-KIND_CONFIG=${KIND_CONFIG:-$root/tests/kind/latest/cluster.yaml}
+KIND_CONFIG=${KIND_CONFIG:-$root/tests/kind/$(cd "$root/tests/kind" && printf '%s\n' * | sort -t. -k1,1n -k2,2n | tail -1)/cluster.yaml}
 CLUSTER_NAME=${CLUSTER_NAME:-browserless-e2e-$(openssl rand -hex 3)}
 E2E_OUT=${E2E_OUT:-$root/tests/e2e/out/$CLUSTER_NAME}
 CHART=$root/charts/browserless
@@ -114,8 +115,15 @@ cleanup() {
     h -n $NS list -a -o json > "$d/helm-releases.json" 2>&1
   fi
   if [ -s "$work/token" ]; then
-    TOKEN_FILE=$work/token find "$E2E_OUT" -type f -exec perl -pi -e \
-      'BEGIN { open my $f, "<", $ENV{TOKEN_FILE} or die; local $/; $t = <$f> } s/\Q$t\E/<redacted>/g' {} +
+    node -e '
+      const fs = require("node:fs"), path = require("node:path");
+      const [token, dir] = [fs.readFileSync(process.argv[1], "latin1"), process.argv[2]];
+      for (const name of fs.readdirSync(dir, { recursive: true })) {
+        const file = path.join(dir, name);
+        if (!fs.statSync(file).isFile()) continue;
+        const text = fs.readFileSync(file, "latin1");
+        if (text.includes(token)) fs.writeFileSync(file, text.split(token).join("<redacted>"), "latin1");
+      }' "$work/token" "$E2E_OUT"
     if grep -rqF -f "$work/token" "$E2E_OUT"; then
       echo "the test token is still present in $E2E_OUT" >&2
       status=1
@@ -133,20 +141,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for cmd in docker jq openssl perl ruby; do
+for cmd in docker jq openssl node; do
   command -v "$cmd" > /dev/null || fail "$cmd is required"
 done
 [[ -x $HELM && $("$HELM" version --template '{{.Version}}') == v4.* ]] || fail "HELM ($HELM) must be Helm 4"
 [ -x "$KIND" ] || fail "KIND ($KIND) is not executable"
-image=$(ruby -ryaml -e 'i = YAML.load_file(ARGV[0])["image"]; print "#{i["repository"]}:#{i["tag"]}"' "$CHART/values.yaml")
-app_version=$(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["appVersion"]' "$CHART/Chart.yaml")
-chart_version=$(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["version"]' "$CHART/Chart.yaml")
+yaml() { node "$root/scripts/yaml-get.ts" "$@"; }
+repository=$(yaml "$CHART/values.yaml" image.repository)
+tag=$(yaml "$CHART/values.yaml" image.tag)
+image=$repository:$tag
+app_version=$(yaml "$CHART/Chart.yaml" appVersion)
+chart_version=$(yaml "$CHART/Chart.yaml" version)
 [ "v$app_version" = "${image##*:}" ] || fail "appVersion $app_version does not match default image $image"
 say "chart $chart_version (appVersion $app_version, image $image); $("$KIND" version); helm $("$HELM" version --template '{{.Version}}')"
 
 "$KIND" create cluster --name "$CLUSTER_NAME" --config "$KIND_CONFIG" --kubeconfig "$work/kubeconfig" --wait 180s >> "$log" 2>&1 ||
   fail "kind create cluster"
-say "Kubernetes $(k version -o json | jq -r .serverVersion.gitVersion) on $(k get node "$node" -o jsonpath='{.status.nodeInfo.architecture}'), node image $(ruby -ryaml -e 'print YAML.load_file(ARGV[0])["nodes"][0]["image"]' "$KIND_CONFIG")"
+say "Kubernetes $(k version -o json | jq -r .serverVersion.gitVersion) on $(k get node "$node" -o jsonpath='{.status.nodeInfo.architecture}'), node image $(yaml "$KIND_CONFIG" nodes.0.image)"
 
 k create namespace $NS > /dev/null
 k label namespace $NS pod-security.kubernetes.io/enforce=restricted pod-security.kubernetes.io/warn=restricted > /dev/null
@@ -265,7 +276,38 @@ hits=$(token_hits "$(pod main)")
 [ "$hits" = 0 ] || fail "token appears $hits times in the pod log"
 pass "token occurrences in the pod log: 0"
 
-# 7. Guards: unusable credentials and unwritable volumes stop the container.
+# 7. Replicas: the Service of a release selects only its own pods, and each new
+# connection reaches one of them. Scaling a release (1 -> 2 -> 1) without a
+# volume keeps a running pod; it promises nothing for sessions on removed pods.
+endpoint_pods() { k -n $NS get endpointslice -l "kubernetes.io/service-name=$1" -o json | jq -r '[.items[].endpoints[]?.targetRef.name] | sort | join(" ")'; }
+release_pods() { k -n $NS get pods -l "app.kubernetes.io/instance=$1" -o json | jq -r '[.items[].metadata.name] | sort | join(" ")'; }
+multi=(--set token.existingSecret=token --set concurrent=20)
+h -n $NS install multi "$CHART" "${multi[@]}" --wait --timeout 10m >> "$log" 2>&1 || fail "install multi"
+first=$(podjson multi | jq -r .metadata.uid)
+h -n $NS upgrade multi "$CHART" "${multi[@]}" --set replicaCount=2 --wait --timeout 10m >> "$log" 2>&1 || fail "upgrade multi to replicaCount=2"
+wait_ready_endpoints multi-browserless 2 60 || fail "multi-browserless has $(ready_endpoints multi-browserless) ready endpoints, expected 2"
+k -n $NS get pods -l app.kubernetes.io/instance=multi -o json |
+  jq -e --arg u "$first" '(.items | length) == 2 and any(.items[]; .metadata.uid == $u and .status.containerStatuses[0].restartCount == 0)' > /dev/null ||
+  fail "scaling to 2 replicas replaced or restarted the existing pod"
+[ "$(endpoint_pods multi-browserless)" = "$(release_pods multi)" ] || fail "multi-browserless endpoints $(endpoint_pods multi-browserless) are not the multi pods $(release_pods multi)"
+[ "$(endpoint_pods $svc)" = "$(release_pods main)" ] || fail "$svc endpoints $(endpoint_pods $svc) are not the main pods $(release_pods main)"
+pass "scaled 1 -> 2 keeping the running pod; each Service's endpoints are exactly its release's pods (main 1, multi 2)"
+ips=$(k -n $NS get pods -l app.kubernetes.io/instance=multi -o jsonpath='{.items[*].status.podIP}' | tr ' ' ,)
+in_pod main spread.mjs SERVICE=http://multi-browserless:3000 "PODS=$ips" > "$work/spread.json" || fail "replicas: $(cat "$work/spread.json")"
+jq -e '.pods == 2 and (.requests | unique) == [0, 1] and (.sessions | unique) == [0, 1]' "$work/spread.json" > /dev/null || fail "replicas: not both pods reached: $(cat "$work/spread.json")"
+pass "through the Service, new connections reached both pods: stateless requests served by pods $(jq -c .requests "$work/spread.json"), WebSocket sessions on pods $(jq -c .sessions "$work/spread.json"); all answered, and still did after one was closed"
+kept=$(release_pods multi)
+h -n $NS upgrade multi "$CHART" "${multi[@]}" --wait --timeout 10m >> "$log" 2>&1 || fail "upgrade multi back to 1 replica"
+wait_single_pod multi || fail "more than one multi pod after scaling to 1"
+wait_ready_endpoints multi-browserless 1 60 || fail "multi-browserless has $(ready_endpoints multi-browserless) ready endpoints after scaling to 1"
+p=$(podjson multi)
+if ! grep -qw "$(jq -r .metadata.name <<< "$p")" <<< "$kept" || ! jq -e '.status.containerStatuses[0].restartCount == 0' <<< "$p" > /dev/null; then
+  fail "scaling to 1 replaced or restarted the remaining pod"
+fi
+in_pod main spread.mjs SERVICE=http://multi-browserless:3000 "PODS=$(jq -r .status.podIP <<< "$p")" > "$work/spread-1.json" || fail "after scaling to 1: $(cat "$work/spread-1.json")"
+pass "scaled 2 -> 1: one of the two pods remains, unrestarted, and serves a request and a session through the Service"
+
+# 8. Guards: unusable credentials and unwritable volumes stop the container.
 h -n $NS install empty "$CHART" --set token.existingSecret=empty-token >> "$log" 2>&1
 expect_guard empty 'TOKEN must be nonempty' "empty token"
 h -n $NS install non-ascii "$CHART" --set token.existingSecret=non-ascii-token >> "$log" 2>&1
@@ -300,8 +342,8 @@ for p in $(k -n $NS get pods -o name); do
 done
 pass "token occurrences in all current and previous container logs: 0"
 
-# 8. Uninstall removes the release's objects and leaves the user-owned PVC.
-for release in empty non-ascii missing readonly main; do
+# 9. Uninstall removes the release's objects and leaves the user-owned PVC.
+for release in empty non-ascii missing readonly multi main; do
   h -n $NS uninstall "$release" --wait --timeout 5m >> "$log" 2>&1 || fail "uninstall $release"
 done
 left=$(k -n $NS get deployments,services -l app.kubernetes.io/name=browserless -o name | wc -l | tr -d ' ')
