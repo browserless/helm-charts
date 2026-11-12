@@ -336,12 +336,13 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   for (const job of ['verify', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
 });
 
-test('workflow jobs use approved Ubuntu runners', () => {
+test('only the kind matrix needs full Ubuntu runners', () => {
   const dir = join(root, '.github/workflows');
   for (const file of readdirSync(dir).filter((name) => /\.ya?ml$/.test(name))) {
     const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
     for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
-      assert.ok(['ubuntu-slim', 'ubuntu-26.04', '${{ matrix.runner }}'].includes(job['runs-on']), `${file} ${id} runs on ${job['runs-on']}`);
+      const expected = file === 'ci.yml' && id === 'e2e' ? '${{ matrix.runner }}' : 'ubuntu-slim';
+      assert.equal(job['runs-on'], expected, `${file} ${id}`);
     }
   }
 });

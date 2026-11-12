@@ -17,11 +17,13 @@ permissions: {}
 
 jobs:
   versions:
-    if: >-
+    # Actor is an additional restriction, not the trust boundary: require the
+    # PR author AND same-repository head below, on pull_request only.
+    if: >- # zizmor: ignore[bot-conditions] -- PR author and same-repo guards prevent an actor-only bypass
       github.actor == 'dependabot[bot]' &&
       github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       contents: read
@@ -53,7 +55,7 @@ jobs:
   push:
     needs: versions
     if: needs.versions.outputs.updates != ''
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       contents: write
@@ -63,10 +65,10 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
       - name: Commit the matching appVersion
         env:
           UPDATES: ${{ needs.versions.outputs.updates }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         # Accepts only a chart name and a release version for each update, and
         # changes nothing but those charts' appVersion lines. The push is a
         # fast-forward of that commit; if Dependabot has updated the branch
@@ -87,7 +89,16 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git commit -am 'build: sync appVersion with the image tag'
-          git push origin "HEAD:refs/heads/$HEAD_REF"
+      - name: Push the matching appVersion
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        # The helper reads the token only for this command, never from git config.
+        run: |
+          # shellcheck disable=SC2016 # Git's helper shell expands GH_TOKEN.
+          git -c credential.helper= \
+            -c 'credential.helper=!f() { printf "%s\n" "username=x-access-token" "password=$GH_TOKEN"; }; f' \
+            push origin "HEAD:refs/heads/$HEAD_REF"
       - name: Run CI on the synced commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

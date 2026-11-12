@@ -14,8 +14,7 @@ on:
   # Also lets the Dependabot appVersion sync re-run CI on the commit it pushes.
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -23,8 +22,10 @@ concurrency:
 
 jobs:
   static:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -118,6 +119,9 @@ jobs:
 
   e2e:
     needs: static
+    permissions:
+      contents: read
+    # kind requires a Docker daemon and privileged containers on both architectures.
     name: e2e (${{ matrix.runner }}, Kubernetes ${{ matrix.kubernetes }})
     strategy:
       fail-fast: false
@@ -167,7 +171,7 @@ jobs:
   kind:
     if: always()
     needs: [static, e2e]
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       actions: read

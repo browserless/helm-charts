@@ -29,7 +29,7 @@ jobs:
   verify:
     # Release Please tags chart releases as <chart>-v<version>.
     if: contains(github.event.release.tag_name, '-v')
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 15
     permissions:
       contents: read
@@ -55,9 +55,9 @@ jobs:
 
   publish:
     needs: verify
-    runs-on: ubuntu-26.04
-    timeout-minutes: 20
-    # Add required reviewers to this environment to gate publication.
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    # Restrict this environment to browserless-v* tags; publication is automatic.
     environment: chart-release
     permissions:
       contents: read
