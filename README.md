@@ -241,12 +241,12 @@ UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
 
 `npm test` runs the chart tests (schema, defaults and overrides, entrypoint
 guards, Kubernetes and runner coverage, lint, package contents and
-reproducibility, use as a dependency) and the tool installer's tests. Node runs
-the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
-are third-party code, so jobs that can push, publish, sign or read an
-environment's secrets install none and run only scripts that import Node
-built-ins. A chart test checks the common ways this could regress; it is not a
-complete security analysis of the workflows.
+reproducibility, use as a dependency), the tool installer's tests and the Slack
+notification's tests. Node runs the TypeScript directly; `npm run typecheck`
+checks it with `tsc`. npm packages are third-party code, so jobs that can push,
+publish, sign or read an environment's secrets install none and run only
+scripts that import Node built-ins. A chart test checks the common ways this
+could regress; it is not a complete security analysis of the workflows.
 
 `tests/e2e/kind.sh` (the CI `e2e` jobs) installs the working tree on a
 disposable kind cluster under the restricted Pod Security Standard and checks
@@ -295,7 +295,10 @@ refuses to overwrite an existing version, packages reproducibly (times come
 from the tag's commit), pushes to `oci://ghcr.io/browserless/charts/browserless`,
 and pulls the chart back to compare bytes and digest. The job then records a
 signed SLSA provenance attestation for the pushed manifest digest and verifies
-it.
+it. Approving and merging the release pull request approves publication; the
+workflow asks for nothing else. Last, the job posts the release, its chart
+reference and digest to Slack. If that post fails, or the webhook is missing,
+the step warns and the release still succeeds: post it to Slack by hand.
 
 If `publish.yml` fails before its push, rerun it. If it fails during or after
 the push, or a rerun finds the version already exists, treat that version as
@@ -331,10 +334,9 @@ helm upgrade --install browserless "$CHART@$DIGEST" \
   without them instead of falling back to `GITHUB_TOKEN`, whose pull requests
   and releases would trigger no workflows. Code that runs in that job on `main`
   can read the key, so the `main` ruleset decides who controls it.
-- A `chart-release` environment with required reviewers, without administrator
-  bypass, limited to `browserless-v*` tags. It is a single-person gate: the App
-  starts the deployment, so preventing self-review does not stop whoever merged
-  the release pull request from approving its publication.
+- A `chart-release` environment limited to `browserless-v*` tags, without
+  required reviewers, holding the Slack incoming webhook for releases
+  (`SLACK_RELEASES_WEBHOOK` secret).
 - Tag rulesets for `browserless-v*`: only the release App may create these tags,
   and nobody may update or delete them.
 - A `main` ruleset requiring pull requests with one approving review and
@@ -351,9 +353,10 @@ also releases with. Each token `release-please.yml` creates is limited to this
 repository and three permissions, but the App's keys are not: any of its keys,
 wherever stored, can create tokens for every repository the App is installed on
 with all its permissions, including Actions, secrets and environments, and
-creating `browserless-v*` tags here. The App cannot change rulesets, and the
-`chart-release` reviewers still decide what is published. After the first
-publish, make the GHCR package public.
+creating `browserless-v*` tags and releases here, which publishes the chart a
+tag points to. The App cannot change rulesets, and `scripts/publish-chart.sh`
+publishes only a tag on `main` that matches its chart version and is not yet in
+the registry. After the first publish, make the GHCR package public.
 
 ## Dependency updates
 

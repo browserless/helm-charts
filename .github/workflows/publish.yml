@@ -10,6 +10,7 @@ name: Publish chart
 # manifest digest it pushed and verifies it against the registry. That digest
 # and attestation identify the published chart: other repository writers can
 # also push packages with GITHUB_TOKEN, so the registry alone is not proof.
+# Last, it posts the release to Slack.
 # Keep `release` the only trigger, without workflow_dispatch: consumers trust
 # attestations this workflow signs for refs/tags/browserless-v*.
 
@@ -57,7 +58,8 @@ jobs:
     needs: verify
     runs-on: ubuntu-26.04
     timeout-minutes: 20
-    # Add required reviewers to this environment to gate publication.
+    # Admits only browserless-v* tags and holds the Slack webhook. It has no
+    # required reviewers: merging the release pull request approves publication.
     environment: chart-release
     permissions:
       contents: read
@@ -114,3 +116,15 @@ jobs:
           gh attestation verify "oci://$NAME:${TAG##*-v}" --repo "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish.yml" \
             --source-ref "refs/tags/$TAG" --source-digest "$(git rev-parse HEAD)"
+      # Last, so it runs only after every step above succeeded. The chart is
+      # published by now: a Slack failure or a missing webhook must not mark
+      # the release as failed.
+      - name: Notify Slack
+        continue-on-error: true
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          RELEASE_URL: ${{ github.event.release.html_url }}
+          NAME: ${{ steps.publish.outputs.name }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_RELEASES_WEBHOOK }}
+        run: scripts/notify-slack.sh
