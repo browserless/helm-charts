@@ -164,27 +164,32 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # The required runtime check. It always runs, and fails unless static and every
-  # e2e job succeeded, so a failed, cancelled or skipped job cannot pass it.
+  # The required check. It always runs, and fails unless every prerequisite
+  # succeeded, so a failed, cancelled or skipped job cannot pass it.
   # GitHub can report a matrix as successful when a leg was cancelled before it
   # got a runner, so it also checks each leg of this run attempt.
   kind:
     if: always()
-    needs: [static, e2e]
+    needs: [static, e2e, lockfile, zizmor, actionlint]
     runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
-      - name: Require static and every e2e job to succeed
+      - name: Require analyzers, static and every e2e job to succeed
         env:
           GH_TOKEN: ${{ github.token }}
           STATIC: ${{ needs.static.result }}
           E2E: ${{ needs.e2e.result }}
+          LOCKFILE: ${{ needs.lockfile.result }}
+          ZIZMOR: ${{ needs.zizmor.result }}
+          ACTIONLINT: ${{ needs.actionlint.result }}
           LEGS: ${{ needs.e2e.outputs.legs }}
         run: |
           echo "static: $STATIC, e2e: $E2E, legs: $LEGS"
+          echo "lockfile: $LOCKFILE, zizmor: $ZIZMOR, actionlint: $ACTIONLINT"
           [ "$STATIC" = success ] && [ "$E2E" = success ] || exit 1
+          [ "$LOCKFILE" = success ] && [ "$ZIZMOR" = success ] && [ "$ACTIONLINT" = success ] || exit 1
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
             --paginate --jq '.jobs[] | select(.name | startswith("e2e (")) | "\(.conclusion) \(.name)"' > legs
           cat legs

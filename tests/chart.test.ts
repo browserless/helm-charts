@@ -289,9 +289,27 @@ test('kubeVersion admits exactly the Kubernetes minor versions CI tests', () => 
   // Branch protection requires `kind`, which must fail unless every e2e job
   // passed; it checks each leg because the matrix result can hide a cancelled one.
   assert.equal(ci.jobs.kind.if, 'always()');
-  assert.deepEqual(ci.jobs.kind.needs, ['static', 'e2e']);
+  assert.deepEqual(ci.jobs.kind.needs, ['static', 'e2e', 'lockfile', 'zizmor', 'actionlint']);
   assert.equal(ci.jobs.e2e.outputs.legs, '${{ strategy.job-total }}');
   assert.equal(ci.jobs.kind.steps[0].env.LEGS, '${{ needs.e2e.outputs.legs }}');
+});
+
+test('required kind check rejects unsuccessful prerequisite jobs', () => {
+  const step = readYaml('.github/workflows/ci.yml').jobs.kind.steps[0];
+  const results = { STATIC: 'success', E2E: 'success', LOCKFILE: 'success', ZIZMOR: 'success', ACTIONLINT: 'success' };
+  const run = (overrides: Record<string, string>) => spawnSync('bash', ['-e', '-c',
+    `gh() { printf 'success e2e (test)\\n'; };\n${step.run}`], {
+    cwd: scratch(),
+    env: { ...process.env, ...results, LEGS: '1', ...overrides },
+    encoding: 'utf8',
+  });
+  assert.equal(run({}).status, 0, 'all successful prerequisites and matrix legs pass');
+  for (const name of Object.keys(results)) {
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      assert.notEqual(run({ [name]: result }).status, 0, `${name}: ${result} must block merging`);
+    }
+    assert.equal(step.env[name], `\${{ needs.${name.toLowerCase()}.result }}`);
+  }
 });
 
 // npm packages are third-party code. A job that can write to the repository or

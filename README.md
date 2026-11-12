@@ -348,8 +348,8 @@ helm upgrade --install browserless "$CHART@$DIGEST" \
 - A `main` ruleset requiring pull requests with one approving review and
   approval of the most recent push, the GitHub Actions checks `static` and
   `kind`, squash merging only, and no force pushes or deletion. `kind` fails
-  unless every `e2e` job passed, so the required checks stay the same when the
-  tested Kubernetes versions change.
+  unless `static`, `lockfile`, `zizmor`, `actionlint`, and every `e2e` job passed,
+  so the required checks stay the same when the tested Kubernetes versions change.
 - Workflow `GITHUB_TOKEN` permissions default to read, GitHub Actions cannot
   approve pull requests, and workflows from all outside contributors need
   approval.
