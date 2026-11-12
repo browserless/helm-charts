@@ -27,6 +27,29 @@ const scratch = () => {
 };
 const readYaml = (path: string): Json => parse(readFileSync(join(root, path), 'utf8'));
 
+// Check every updater: zizmor 1.32.0 stops after its first compliant entry.
+test('every Dependabot updater covers all dependencies with a three-day cooldown', () => {
+  const { updates } = readYaml('.github/dependabot.yml');
+  for (const ecosystem of ['helm', 'github-actions', 'gomod', 'npm', 'docker']) {
+    assert.ok(updates.some((update: Json) => update['package-ecosystem'] === ecosystem), `missing ${ecosystem} updater`);
+  }
+  for (const update of updates) {
+    const cooldown = update.cooldown;
+    const name = update['package-ecosystem'];
+    assert.ok(Number.isInteger(cooldown?.['default-days']) && cooldown['default-days'] >= 3, `${name}: explicit three-day cooldown required`);
+    for (const key of ['semver-major-days', 'semver-minor-days', 'semver-patch-days']) {
+      assert.ok(!(key in cooldown) || (Number.isInteger(cooldown[key]) && cooldown[key] >= 3), `${name}: ${key} bypasses cooldown`);
+    }
+    assert.ok(!('include' in cooldown) && !('exclude' in cooldown), `${name}: cooldown must cover every dependency`);
+  }
+});
+
+test('CI actionlint uses the same version as tools/go.mod', () => {
+  const version = readFileSync(join(root, 'tools/go.mod'), 'utf8').match(/github\.com\/rhysd\/actionlint v(\S+)/)?.[1];
+  assert.ok(version);
+  assert.equal(readYaml('.github/workflows/ci.yml').jobs.actionlint?.env.ACTIONLINT_VERSION, version);
+});
+
 function run(command: string, args: string[], env: NodeJS.ProcessEnv = {}, cwd?: string) {
   const result = spawnSync(command, args, { encoding: 'utf8', env: { ...process.env, ...env }, cwd });
   if (result.error) throw result.error;
@@ -282,7 +305,7 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   };
   const dir = join(root, '.github/workflows');
   const privileged: string[] = [];
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync(dir).filter((name) => /\.ya?ml$/.test(name))) {
     const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
     for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
       // No permissions key means the token's default permissions.
@@ -313,12 +336,12 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   for (const job of ['verify', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
 });
 
-test('every workflow job runs on an Ubuntu 26.04 runner', () => {
+test('workflow jobs use approved Ubuntu runners', () => {
   const dir = join(root, '.github/workflows');
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync(dir).filter((name) => /\.ya?ml$/.test(name))) {
     const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
     for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
-      assert.ok(['ubuntu-26.04', '${{ matrix.runner }}'].includes(job['runs-on']), `${file} ${id} runs on ${job['runs-on']}`);
+      assert.ok(['ubuntu-slim', 'ubuntu-26.04', '${{ matrix.runner }}'].includes(job['runs-on']), `${file} ${id} runs on ${job['runs-on']}`);
     }
   }
 });

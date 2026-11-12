@@ -2,13 +2,13 @@ version: 2
 # Every version CI consumes is in a file Dependabot natively updates:
 #   helm            the default image in values.yaml (and any chart
 #                   dependencies); dependabot-app-version.yml then syncs appVersion
-#   github-actions  workflow actions (commit SHAs with version comments)
+#   github-actions  workflow actions and actions.lock
 #   gomod           Helm, kind and actionlint: tools/go.mod is only their version
 #                   list; scripts/install-tools.ts downloads those release binaries
 #   npm             the test and release scripts' dependencies (package-lock.json)
 #   docker          the kindest/node images in tests/kind
 # Not covered: the Node.js patch release (.nvmrc names the major version) and
-# the runner's ShellCheck, jq, OpenSSL and Docker.
+# shell-installed security tools/checksums and the runner's jq, OpenSSL and Docker.
 #
 # Commit prefixes decide releases (see release-please-config.json): `build`
 # changes what the chart deploys and cuts a patch release; `ci` does not.
@@ -69,6 +69,8 @@ updates:
       - /tests/kind/*
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     commit-message:
       prefix: ci
     ignore:
