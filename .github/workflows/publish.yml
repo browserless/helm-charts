@@ -3,7 +3,7 @@ name: Publish chart
 # Publishes the chart of a published GitHub Release (created by release-please
 # when its release PR merges) to oci://ghcr.io/browserless/charts. Runs only on
 # release events, from the release's commit. The verify job runs the chart
-# tests; then scripts/publish-chart.sh verifies the tag is on main and matches
+# tests and packages without OIDC; scripts/publish-chart.sh verifies the tag is on main and matches
 # Chart.yaml and the release manifest, refuses to overwrite an existing
 # version, and checks the pushed chart by pulling it back.
 # The job then records a signed SLSA provenance attestation for the exact OCI
@@ -33,12 +33,15 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      package-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       # github.sha is the commit the release tag pointed to when the release
       # was published. Both jobs check it out, so publish uses what this tested.
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.sha }}
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v7.1.0
         with:
@@ -52,6 +55,19 @@ jobs:
         run: npm test
       - name: appVersion matches the default image tag
         run: node scripts/sync-app-version.ts --check
+      - name: Package the tested chart without publishing credentials
+        id: package
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          scripts/package-chart.sh "$TAG" "$RUNNER_TEMP/chart-package"
+          echo "sha256=$(sha256sum "$RUNNER_TEMP/chart-package/"*.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: chart-package
+          path: ${{ runner.temp }}/chart-package/*.tgz
+          if-no-files-found: error
+          retention-days: 7
 
   publish:
     needs: verify
@@ -79,6 +95,10 @@ jobs:
           package-manager-cache: false
       - name: Install Helm (version from tools/go.mod)
         run: node scripts/install-tools.ts helm
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: chart-package
+          path: ${{ runner.temp }}/chart-package
       - name: Log in to GHCR
         env:
           ACTOR: ${{ github.actor }}
@@ -94,10 +114,17 @@ jobs:
         id: publish
         env:
           TAG: ${{ github.event.release.tag_name }}
+          PACKAGE_SHA256: ${{ needs.verify.outputs.package-sha256 }}
           HELM: .bin/helm
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/publish-chart.sh "$TAG"
+        run: |
+          shopt -s nullglob dotglob
+          archives=("$RUNNER_TEMP/chart-package/"*)
+          [ "${#archives[@]}" -eq 1 ] && [ -f "${archives[0]}" ] || { echo 'expected exactly one chart archive' >&2; exit 1; }
+          [[ $PACKAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo 'missing package checksum' >&2; exit 1; }
+          printf '%s  %s\n' "$PACKAGE_SHA256" "${archives[0]}" | sha256sum --check
+          scripts/publish-chart.sh "$TAG" "${archives[0]}"
       - name: Attest provenance of the pushed manifest
         uses: actions/attest@v4.2.2
         with:
