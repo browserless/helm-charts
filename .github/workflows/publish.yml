@@ -58,8 +58,9 @@ jobs:
     needs: verify
     runs-on: ubuntu-26.04
     timeout-minutes: 20
-    # Admits only browserless-v* tags and holds the Slack webhook. It has no
-    # required reviewers: merging the release pull request approves publication.
+    # Limited to browserless-v* tags, and where the SLACK_RELEASES_WEBHOOK secret
+    # belongs. No required reviewers: merging the release pull request approves
+    # publication.
     environment: chart-release
     permissions:
       contents: read

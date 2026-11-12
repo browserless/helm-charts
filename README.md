@@ -297,8 +297,8 @@ and pulls the chart back to compare bytes and digest. The job then records a
 signed SLSA provenance attestation for the pushed manifest digest and verifies
 it. Approving and merging the release pull request approves publication; the
 workflow asks for nothing else. Last, the job posts the release, its chart
-reference and digest to Slack. If that post fails, or the webhook is missing,
-the step warns and the release still succeeds: post it to Slack by hand.
+reference and digest to Slack. A failed post, including a missing webhook, does
+not fail the release; post it to Slack by hand.
 
 If `publish.yml` fails before its push, rerun it. If it fails during or after
 the push, or a rerun finds the version already exists, treat that version as
