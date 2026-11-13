@@ -231,9 +231,9 @@ release), Docker, jq, OpenSSL and ShellCheck:
 ```sh
 npm ci
 node scripts/install-tools.ts            # Helm, kind and actionlint into .bin/
-npm run typecheck && npm test            # the CI static job, with the two lines below
-.bin/actionlint
-shellcheck scripts/*.sh tests/e2e/*.sh
+npm run typecheck && npm test            # CI static job
+.bin/actionlint                         # CI actionlint job
+shellcheck scripts/*.sh tests/e2e/*.sh   # CI actionlint job uses ShellCheck 0.11.0
 tests/e2e/kind.sh                         # newest tests/kind version
 KIND_CONFIG=tests/kind/<minor>/cluster.yaml tests/e2e/kind.sh
 UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
@@ -243,10 +243,10 @@ UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
 guards, Kubernetes and runner coverage, lint, package contents and
 reproducibility, use as a dependency) and the tool installer's tests. Node runs
 the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
-are third-party code, so jobs that can push, publish, sign or read an
-environment's secrets install none and run only scripts that import Node
-built-ins. A chart test checks the common ways this could regress; it is not a
-complete security analysis of the workflows.
+are third-party code, so the isolated release packaging job and jobs that can
+push, publish, sign or read an environment's secrets install none and run only
+scripts that import Node built-ins. A chart test checks the common ways this
+could regress; it is not a complete security analysis of the workflows.
 
 `tests/e2e/kind.sh` (the CI `e2e` jobs) installs the working tree on a
 disposable kind cluster under the restricted Pod Security Standard and checks
@@ -293,9 +293,11 @@ Release Please keeps a draft release pull request per chart that sets
 `Chart.yaml` `version`, the chart's `CHANGELOG.md` and
 `.release-please-manifest.json`. Merging it creates the tag `<chart>-v<version>`
 and its GitHub Release, which starts `publish.yml` automatically. From the tag,
-a job without write or OIDC access repeats the chart tests, checks `appVersion`,
-and runs `scripts/package-chart.sh` to build a reproducible archive (times come
-from the tag's commit). The publishing job downloads that same-run artifact,
+a job without write or OIDC access repeats the chart tests and checks `appVersion`.
+A separate read-only job, with a fresh checkout and no npm dependencies, runs
+`scripts/package-chart.sh` to build a reproducible archive (times come from the
+tag's commit), rejecting untracked or ignored chart files. The publishing job
+downloads that same-run artifact,
 checks its SHA-256 against the build job's output, and runs
 `scripts/publish-chart.sh`, which refuses unless the checkout is
 the tag, the tag is on `main`, and the chart version and manifest agree. It
@@ -342,7 +344,7 @@ helm upgrade --install browserless "$CHART@$DIGEST" \
   can read the key, so the `main` ruleset decides who controls it.
 - A `chart-release` environment limited to `browserless-v*` tags, with no
   required reviewers. Publication is automatic after Release Please creates
-  the release and the read-only test/package job succeeds.
+  the release and the separate read-only test and package jobs succeed.
 - Tag rulesets for `browserless-v*`: only the release App may create these tags,
   and nobody may update or delete them.
 - A `main` ruleset requiring pull requests with one approving review and

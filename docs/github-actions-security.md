@@ -7,7 +7,9 @@ references and existing `.github/workflows/actions.lock` entries, not shell
 download URLs or checksums.
 
 - **gh-actions-lock v0.4.1:** review the release and update `--pin`. Use the same
-  version locally. Extension installation has no separate archive checksum.
+  version locally. v0.4.1 is a GitHub immutable release: its tag and published
+  assets cannot change. Confirm replacement releases are immutable before
+  updating the pin; extension installation has no separate checksum step.
 - **zizmor 1.32.0, actionlint 1.7.12, ShellCheck 0.11.0:** review the release and
   verify the Linux x86-64 archive against publisher checksums/signatures where
   available. Update version, URL, extraction path and literal SHA-256 together.
@@ -36,10 +38,11 @@ upgrading analyzers. These checks run in PR CI, without local pre-commit hooks.
 ## Exceptions
 
 - `.github/zizmor.yml` sets the approved three-day minimum instead of seven.
-  Every updater, including Docker, has an explicit cooldown. The test guard
-  checks all entries, SemVer overrides and include/exclude bypasses because
-  zizmor 1.32.0 stops after its first compliant entry. Remove the workaround
-  only after an upgrade detects independently weakened later entries.
+  Every updater, including Docker, has an explicit cooldown. Keep the permanent
+  test guard for all entries, SemVer overrides and unsupported keys (including
+  include/exclude and YAML merge keys). zizmor 1.32.0 stops after its first
+  compliant entry, assumes three days for missing cooldowns/defaults, and does
+  not check overrides or filters. Fixing its early return alone is insufficient.
 - `dependabot-app-version.yml` suppresses only `bot-conditions` on its existing
   actor restriction. The trust boundary also requires PR author Dependabot and
   a same-repository head, on `pull_request` only. Preserve all three conditions;

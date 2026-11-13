@@ -2,8 +2,8 @@ name: Publish chart
 
 # Publishes the chart of a published GitHub Release (created by release-please
 # when its release PR merges) to oci://ghcr.io/browserless/charts. Runs only on
-# release events, from the release's commit. The verify job runs the chart
-# tests and packages without OIDC; scripts/publish-chart.sh verifies the tag is on main and matches
+# release events, from the release's commit. Tests and packaging run in separate
+# read-only jobs; scripts/publish-chart.sh verifies the tag is on main and matches
 # Chart.yaml and the release manifest, refuses to overwrite an existing
 # version, and checks the pushed chart by pulling it back.
 # The job then records a signed SLSA provenance attestation for the exact OCI
@@ -25,7 +25,7 @@ permissions: {}
 
 jobs:
   # The chart tests need the scripts' npm dependency (yaml), so they run here,
-  # without write access, and the publishing job installs no npm packages.
+  # without write access. The package and publish jobs install no npm packages.
   verify:
     # Release Please tags chart releases as <chart>-v<version>.
     if: contains(github.event.release.tag_name, '-v')
@@ -33,11 +33,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
-    outputs:
-      package-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       # github.sha is the commit the release tag pointed to when the release
-      # was published. Both jobs check it out, so publish uses what this tested.
+      # was published. All jobs check it out, so publish uses what this tested.
       - uses: actions/checkout@v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -55,7 +53,29 @@ jobs:
         run: npm test
       - name: appVersion matches the default image tag
         run: node scripts/sync-app-version.ts --check
-      - name: Package the tested chart without publishing credentials
+
+  # Isolate release bytes and the Helm binary from third-party npm test code.
+  package:
+    needs: verify
+    runs-on: ubuntu-slim
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      package-sha256: ${{ steps.package.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+      - name: Install Helm (version from tools/go.mod)
+        run: node scripts/install-tools.ts helm
+      - name: Package the tested chart without npm or publishing credentials
         id: package
         env:
           TAG: ${{ github.event.release.tag_name }}
@@ -70,7 +90,7 @@ jobs:
           retention-days: 7
 
   publish:
-    needs: verify
+    needs: [verify, package]
     runs-on: ubuntu-slim
     timeout-minutes: 15
     # Restrict this environment to browserless-v* tags; publication is automatic.
@@ -114,7 +134,7 @@ jobs:
         id: publish
         env:
           TAG: ${{ github.event.release.tag_name }}
-          PACKAGE_SHA256: ${{ needs.verify.outputs.package-sha256 }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
           HELM: .bin/helm
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}

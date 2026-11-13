@@ -1,5 +1,5 @@
 version: 2
-# Every version CI consumes is in a file Dependabot natively updates:
+# Dependabot updates the following CI inputs; manual exceptions are listed below:
 #   helm            the default image in values.yaml (and any chart
 #                   dependencies); dependabot-app-version.yml then syncs appVersion
 #   github-actions  workflow actions and actions.lock

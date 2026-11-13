@@ -52,6 +52,16 @@ test('publishes the prepared chart, preserves its timestamp, and rejects invalid
   assert.equal(statSync(archive).mtimeMs, epoch * 1000);
   ok('bash', ['scripts/package-chart.sh', tag, join(work, 'second')]);
   assert.deepEqual(readFileSync(join(work, 'second', `browserless-${version}.tgz`)), bytes);
+  // Neither untracked nor ignored chart files may enter a signed release.
+  for (const name of ['injected.yaml', 'ignored.yaml']) {
+    writeFileSync(join(work, '.git/info/exclude'), 'ignored.yaml\n');
+    const injected = join(work, 'charts/browserless/templates', name);
+    writeFileSync(injected, 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: injected\n');
+    const result = run('bash', ['scripts/package-chart.sh', tag, packages]);
+    assert.notEqual(result.status, 0, `${name} must be rejected`);
+    assert.match(result.text, /chart files differ from tag/);
+    rmSync(injected);
+  }
   rejects([tag], /usage/);
   rejects([tag, join(work, 'absent.tgz')], /archive/);
   rejects(['../browserless-v1.0.0', archive], /not <chart>/);

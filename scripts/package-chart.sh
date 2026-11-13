@@ -11,6 +11,7 @@ chart=${tag%-v*} version=${tag##*-v}
 tagged=$(git -C "$root" rev-parse --verify "refs/tags/$tag^{commit}")
 [ "$(git -C "$root" rev-parse HEAD)" = "$tagged" ] || { echo "checkout is not tag $tag" >&2; exit 1; }
 [ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ] || { echo 'tracked files differ from tag' >&2; exit 1; }
+[ -z "$(git -C "$root" status --porcelain --ignored --untracked-files=all -- "charts/$chart")" ] || { echo 'chart files differ from tag' >&2; exit 1; }
 epoch=$(git -C "$root" log -1 --format=%ct "$tagged")
 mkdir -p "$out"
 SOURCE_DATE_EPOCH=$epoch "$HELM" package "$root/charts/$chart" --destination "$out"

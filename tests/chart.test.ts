@@ -27,7 +27,7 @@ const scratch = () => {
 };
 const readYaml = (path: string): Json => parse(readFileSync(join(root, path), 'utf8'));
 
-// Check every updater: zizmor 1.32.0 stops after its first compliant entry.
+// Permanent policy guard: require explicit cooldowns and reject bypasses.
 test('every Dependabot updater covers all dependencies with a three-day cooldown', () => {
   const { updates } = readYaml('.github/dependabot.yml');
   for (const ecosystem of ['helm', 'github-actions', 'gomod', 'npm', 'docker']) {
@@ -40,7 +40,9 @@ test('every Dependabot updater covers all dependencies with a three-day cooldown
     for (const key of ['semver-major-days', 'semver-minor-days', 'semver-patch-days']) {
       assert.ok(!(key in cooldown) || (Number.isInteger(cooldown[key]) && cooldown[key] >= 3), `${name}: ${key} bypasses cooldown`);
     }
-    assert.ok(!('include' in cooldown) && !('exclude' in cooldown), `${name}: cooldown must cover every dependency`);
+    for (const key of Object.keys(cooldown)) {
+      assert.match(key, /^(default-days|semver-(major|minor|patch)-days)$/, `${name}: unsupported cooldown key`);
+    }
   }
 });
 
@@ -312,10 +314,10 @@ test('required kind check rejects unsuccessful prerequisite jobs', () => {
   }
 });
 
-// npm packages are third-party code. A job that can write to the repository or
-// packages, sign, or read an environment's secrets installs none, and every
+// npm packages are third-party code. A job that builds a release artifact, can
+// write to the repository or packages, sign, or read secrets installs none, and every
 // script it runs, directly or from a shell script, imports only Node built-ins.
-test('jobs that can write, sign or read secrets run no npm packages', () => {
+test('release builders and jobs that can write, sign or read secrets run no npm packages', () => {
   const builtinsOnly = (script: string, where: string) => {
     for (const [, from] of readFileSync(join(root, script), 'utf8').matchAll(/\bfrom '([^']+)'/g)) {
       assert.match(from ?? '', /^node:/, `${where} runs ${script}, which imports ${from}`);
@@ -329,7 +331,8 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
       // No permissions key means the token's default permissions.
       const permissions = job.permissions ?? workflow.permissions;
       const writes = permissions === undefined || permissions === 'write-all' || Object.values(permissions).includes('write');
-      if (!job.environment && !writes) continue;
+      const buildsRelease = file === 'publish.yml' && job.steps.some((step: Json) => step.with?.name === 'chart-package' && step.uses?.startsWith('actions/upload-artifact@'));
+      if (!job.environment && !writes && !buildsRelease) continue;
       const where = `${file} ${id}`;
       privileged.push(where);
       for (const { run = '' } of job.steps) {
@@ -345,13 +348,15 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   }
   assert.deepEqual(privileged.sort(), [
     'dependabot-app-version.yml push',
+    'publish.yml package',
     'publish.yml publish',
     'release-please.yml release-please',
   ]);
-  // Both jobs check out the release event's commit, so the publishing job
+  // All jobs check out the release event's commit, so the publishing job
   // publishes the commit the read-only verify job tested.
   const publish = readYaml('.github/workflows/publish.yml');
-  for (const job of ['verify', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
+  for (const job of ['verify', 'package', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
+  assert.deepEqual(publish.jobs.publish.needs, ['verify', 'package']);
 });
 
 test('only the kind matrix needs full Ubuntu runners', () => {
