@@ -2,7 +2,7 @@ apiVersion: v2
 name: browserless
 description: Browserless Chromium as a Deployment and a ClusterIP Service
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "2.63.0"
 kubeVersion: ">=1.35.0-0 <1.38.0-0"
 home: https://www.browserless.io/
