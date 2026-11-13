@@ -27,6 +27,31 @@ const scratch = () => {
 };
 const readYaml = (path: string): Json => parse(readFileSync(join(root, path), 'utf8'));
 
+// Permanent policy guard: require explicit cooldowns and reject bypasses.
+test('every Dependabot updater covers all dependencies with a three-day cooldown', () => {
+  const { updates } = readYaml('.github/dependabot.yml');
+  for (const ecosystem of ['helm', 'github-actions', 'gomod', 'npm', 'docker']) {
+    assert.ok(updates.some((update: Json) => update['package-ecosystem'] === ecosystem), `missing ${ecosystem} updater`);
+  }
+  for (const update of updates) {
+    const cooldown = update.cooldown;
+    const name = update['package-ecosystem'];
+    assert.ok(Number.isInteger(cooldown?.['default-days']) && cooldown['default-days'] >= 3, `${name}: explicit three-day cooldown required`);
+    for (const key of ['semver-major-days', 'semver-minor-days', 'semver-patch-days']) {
+      assert.ok(!(key in cooldown) || (Number.isInteger(cooldown[key]) && cooldown[key] >= 3), `${name}: ${key} bypasses cooldown`);
+    }
+    for (const key of Object.keys(cooldown)) {
+      assert.match(key, /^(default-days|semver-(major|minor|patch)-days)$/, `${name}: unsupported cooldown key`);
+    }
+  }
+});
+
+test('CI actionlint uses the same version as tools/go.mod', () => {
+  const version = readFileSync(join(root, 'tools/go.mod'), 'utf8').match(/github\.com\/rhysd\/actionlint v(\S+)/)?.[1];
+  assert.ok(version);
+  assert.equal(readYaml('.github/workflows/ci.yml').jobs.actionlint?.env.ACTIONLINT_VERSION, version);
+});
+
 function run(command: string, args: string[], env: NodeJS.ProcessEnv = {}, cwd?: string) {
   const result = spawnSync(command, args, { encoding: 'utf8', env: { ...process.env, ...env }, cwd });
   if (result.error) throw result.error;
@@ -266,15 +291,33 @@ test('kubeVersion admits exactly the Kubernetes minor versions CI tests', () => 
   // Branch protection requires `kind`, which must fail unless every e2e job
   // passed; it checks each leg because the matrix result can hide a cancelled one.
   assert.equal(ci.jobs.kind.if, 'always()');
-  assert.deepEqual(ci.jobs.kind.needs, ['static', 'e2e']);
+  assert.deepEqual(ci.jobs.kind.needs, ['static', 'e2e', 'lockfile', 'zizmor', 'actionlint']);
   assert.equal(ci.jobs.e2e.outputs.legs, '${{ strategy.job-total }}');
   assert.equal(ci.jobs.kind.steps[0].env.LEGS, '${{ needs.e2e.outputs.legs }}');
 });
 
-// npm packages are third-party code. A job that can write to the repository or
-// packages, sign, or read an environment's secrets installs none, and every
+test('required kind check rejects unsuccessful prerequisite jobs', () => {
+  const step = readYaml('.github/workflows/ci.yml').jobs.kind.steps[0];
+  const results = { STATIC: 'success', E2E: 'success', LOCKFILE: 'success', ZIZMOR: 'success', ACTIONLINT: 'success' };
+  const run = (overrides: Record<string, string>) => spawnSync('bash', ['-e', '-c',
+    `gh() { printf 'success e2e (test)\\n'; };\n${step.run}`], {
+    cwd: scratch(),
+    env: { ...process.env, ...results, LEGS: '1', ...overrides },
+    encoding: 'utf8',
+  });
+  assert.equal(run({}).status, 0, 'all successful prerequisites and matrix legs pass');
+  for (const name of Object.keys(results)) {
+    for (const result of ['failure', 'cancelled', 'skipped']) {
+      assert.notEqual(run({ [name]: result }).status, 0, `${name}: ${result} must block merging`);
+    }
+    assert.equal(step.env[name], `\${{ needs.${name.toLowerCase()}.result }}`);
+  }
+});
+
+// npm packages are third-party code. A job that builds a release artifact, can
+// write to the repository or packages, sign, or read secrets installs none, and every
 // script it runs, directly or from a shell script, imports only Node built-ins.
-test('jobs that can write, sign or read secrets run no npm packages', () => {
+test('release builders and jobs that can write, sign or read secrets run no npm packages', () => {
   const builtinsOnly = (script: string, where: string) => {
     for (const [, from] of readFileSync(join(root, script), 'utf8').matchAll(/\bfrom '([^']+)'/g)) {
       assert.match(from ?? '', /^node:/, `${where} runs ${script}, which imports ${from}`);
@@ -282,13 +325,14 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   };
   const dir = join(root, '.github/workflows');
   const privileged: string[] = [];
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync(dir).filter((name) => /\.ya?ml$/.test(name))) {
     const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
     for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
       // No permissions key means the token's default permissions.
       const permissions = job.permissions ?? workflow.permissions;
       const writes = permissions === undefined || permissions === 'write-all' || Object.values(permissions).includes('write');
-      if (!job.environment && !writes) continue;
+      const buildsRelease = file === 'publish.yml' && job.steps.some((step: Json) => step.with?.name === 'chart-package' && step.uses?.startsWith('actions/upload-artifact@'));
+      if (!job.environment && !writes && !buildsRelease) continue;
       const where = `${file} ${id}`;
       privileged.push(where);
       for (const { run = '' } of job.steps) {
@@ -304,21 +348,24 @@ test('jobs that can write, sign or read secrets run no npm packages', () => {
   }
   assert.deepEqual(privileged.sort(), [
     'dependabot-app-version.yml push',
+    'publish.yml package',
     'publish.yml publish',
     'release-please.yml release-please',
   ]);
-  // Both jobs check out the release event's commit, so the publishing job
+  // All jobs check out the release event's commit, so the publishing job
   // publishes the commit the read-only verify job tested.
   const publish = readYaml('.github/workflows/publish.yml');
-  for (const job of ['verify', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
+  for (const job of ['verify', 'package', 'publish']) assert.equal(publish.jobs[job].steps[0].with.ref, '${{ github.sha }}', job);
+  assert.deepEqual(publish.jobs.publish.needs, ['verify', 'package']);
 });
 
-test('every workflow job runs on an Ubuntu 26.04 runner', () => {
+test('only the kind matrix needs full Ubuntu runners', () => {
   const dir = join(root, '.github/workflows');
-  for (const file of readdirSync(dir)) {
+  for (const file of readdirSync(dir).filter((name) => /\.ya?ml$/.test(name))) {
     const workflow: Json = parse(readFileSync(join(dir, file), 'utf8'));
     for (const [id, job] of Object.entries<Json>(workflow.jobs)) {
-      assert.ok(['ubuntu-26.04', '${{ matrix.runner }}'].includes(job['runs-on']), `${file} ${id} runs on ${job['runs-on']}`);
+      const expected = file === 'ci.yml' && id === 'e2e' ? '${{ matrix.runner }}' : 'ubuntu-slim';
+      assert.equal(job['runs-on'], expected, `${file} ${id}`);
     }
   }
 });

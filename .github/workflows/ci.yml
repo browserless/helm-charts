@@ -14,8 +14,7 @@ on:
   # Also lets the Dependabot appVersion sync re-run CI on the commit it pushes.
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
@@ -23,30 +22,106 @@ concurrency:
 
 jobs:
   static:
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-slim
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
       - run: npm ci --ignore-scripts
-      - name: Install Helm and actionlint (versions from tools/go.mod)
-        run: node scripts/install-tools.ts helm actionlint
-      - name: Lint workflows and scripts
-        run: |
-          .bin/actionlint
-          shellcheck scripts/*.sh tests/e2e/*.sh
+      - name: Install Helm (version from tools/go.mod)
+        run: node scripts/install-tools.ts helm
       - name: Type-check
         run: npm run typecheck
       - name: Chart and script tests
         run: npm test
 
+  lockfile:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install and verify workflow lockfile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh extension install github/gh-actions-lock --pin v0.4.1
+          gh actions-lock --verify
+
+  zizmor:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install zizmor 1.32.0
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            --proto '=https' --tlsv1.2 \
+            https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz \
+            -o zizmor.tar.gz
+          echo 'bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b  zizmor.tar.gz' | sha256sum --check
+          mkdir -p workflow-tools
+          tar -xzf zizmor.tar.gz -C workflow-tools zizmor
+          echo "$RUNNER_TEMP/workflow-tools" >> "$GITHUB_PATH"
+      - name: Audit workflows from the repository root
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor .
+
+  actionlint:
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      # tests/chart.test.ts also checks the tools/go.mod pin.
+      ACTIONLINT_VERSION: '1.7.12'
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint and ShellCheck 0.11.0
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            --proto '=https' --tlsv1.2 \
+            "https://github.com/rhysd/actionlint/releases/download/v$ACTIONLINT_VERSION/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            -o actionlint.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | sha256sum --check
+          curl --fail --silent --show-error --location --retry 3 \
+            --proto '=https' --tlsv1.2 \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            -o shellcheck.tar.xz
+          echo '8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  shellcheck.tar.xz' | sha256sum --check
+          mkdir -p workflow-tools
+          tar -xzf actionlint.tar.gz -C workflow-tools actionlint
+          tar -xJf shellcheck.tar.xz --strip-components=1 -C workflow-tools shellcheck-v0.11.0/shellcheck
+          echo "$RUNNER_TEMP/workflow-tools" >> "$GITHUB_PATH"
+      - name: Lint workflows and scripts
+        run: |
+          actionlint
+          shellcheck scripts/*.sh tests/e2e/*.sh
+
   e2e:
     needs: static
+    permissions:
+      contents: read
+    # kind requires a Docker daemon and privileged containers on both architectures.
     name: e2e (${{ matrix.runner }}, Kubernetes ${{ matrix.kubernetes }})
     strategy:
       fail-fast: false
@@ -60,10 +135,10 @@ jobs:
       # Every leg that runs reports the matrix size; the kind job checks each leg.
       legs: ${{ strategy.job-total }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version-file: .nvmrc
           package-manager-cache: false
@@ -82,34 +157,39 @@ jobs:
           UPGRADE_FROM: ${{ vars.E2E_UPGRADE_FROM }}
       - name: Upload the log and redacted diagnostics
         if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: e2e-${{ matrix.runner }}-${{ matrix.kubernetes }}
           path: ${{ runner.temp }}/e2e
           retention-days: 14
           if-no-files-found: warn
 
-  # The required runtime check. It always runs, and fails unless static and every
-  # e2e job succeeded, so a failed, cancelled or skipped job cannot pass it.
+  # The required check. It always runs, and fails unless every prerequisite
+  # succeeded, so a failed, cancelled or skipped job cannot pass it.
   # GitHub can report a matrix as successful when a leg was cancelled before it
   # got a runner, so it also checks each leg of this run attempt.
   kind:
     if: always()
-    needs: [static, e2e]
-    runs-on: ubuntu-26.04
+    needs: [static, e2e, lockfile, zizmor, actionlint]
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
       actions: read
     steps:
-      - name: Require static and every e2e job to succeed
+      - name: Require analyzers, static and every e2e job to succeed
         env:
           GH_TOKEN: ${{ github.token }}
           STATIC: ${{ needs.static.result }}
           E2E: ${{ needs.e2e.result }}
+          LOCKFILE: ${{ needs.lockfile.result }}
+          ZIZMOR: ${{ needs.zizmor.result }}
+          ACTIONLINT: ${{ needs.actionlint.result }}
           LEGS: ${{ needs.e2e.outputs.legs }}
         run: |
           echo "static: $STATIC, e2e: $E2E, legs: $LEGS"
+          echo "lockfile: $LOCKFILE, zizmor: $ZIZMOR, actionlint: $ACTIONLINT"
           [ "$STATIC" = success ] && [ "$E2E" = success ] || exit 1
+          [ "$LOCKFILE" = success ] && [ "$ZIZMOR" = success ] && [ "$ACTIONLINT" = success ] || exit 1
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
             --paginate --jq '.jobs[] | select(.name | startswith("e2e (")) | "\(.conclusion) \(.name)"' > legs
           cat legs
