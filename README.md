@@ -231,9 +231,9 @@ release), Docker, jq, OpenSSL and ShellCheck:
 ```sh
 npm ci
 node scripts/install-tools.ts            # Helm, kind and actionlint into .bin/
-npm run typecheck && npm test            # the CI static job, with the two lines below
-.bin/actionlint
-shellcheck scripts/*.sh tests/e2e/*.sh
+npm run typecheck && npm test            # CI static job
+.bin/actionlint                         # CI actionlint job
+shellcheck scripts/*.sh tests/e2e/*.sh   # CI actionlint job uses ShellCheck 0.11.0
 tests/e2e/kind.sh                         # newest tests/kind version
 KIND_CONFIG=tests/kind/<minor>/cluster.yaml tests/e2e/kind.sh
 UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
@@ -243,10 +243,10 @@ UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
 guards, Kubernetes and runner coverage, lint, package contents and
 reproducibility, use as a dependency) and the tool installer's tests. Node runs
 the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
-are third-party code, so jobs that can push, publish, sign or read an
-environment's secrets install none and run only scripts that import Node
-built-ins. A chart test checks the common ways this could regress; it is not a
-complete security analysis of the workflows.
+are third-party code, so the isolated release packaging job and jobs that can
+push, publish, sign or read an environment's secrets install none and run only
+scripts that import Node built-ins. A chart test checks the common ways this
+could regress; it is not a complete security analysis of the workflows.
 
 `tests/e2e/kind.sh` (the CI `e2e` jobs) installs the working tree on a
 disposable kind cluster under the restricted Pod Security Standard and checks
@@ -272,6 +272,11 @@ That proves integrity, not authenticity: a release whose binary and checksum fil
 were both replaced would pass, and `tools/go.sum`, which Dependabot maintains,
 does not attest the binaries.
 
+CI installs zizmor 1.32.0, actionlint 1.7.12 and ShellCheck 0.11.0 from
+checksum-pinned archives and verifies the workflow lockfile independently of
+the chart tests. See [security tool maintenance](docs/github-actions-security.md)
+for the update procedure and narrow analyzer exceptions.
+
 ## Releases
 
 Pull requests are squash-merged with the pull request title as the commit
@@ -287,12 +292,18 @@ updates are `build` commits, so a new Browserless image is a patch release.
 Release Please keeps a draft release pull request per chart that sets
 `Chart.yaml` `version`, the chart's `CHANGELOG.md` and
 `.release-please-manifest.json`. Merging it creates the tag `<chart>-v<version>`
-and its GitHub Release, which starts `publish.yml`. From the tag, a job without
-write access repeats the chart tests and checks `appVersion`. The publishing
-job then runs `scripts/publish-chart.sh`, which refuses unless the checkout is
+and its GitHub Release, which starts `publish.yml` automatically. From the tag,
+a job without write or OIDC access repeats the chart tests and checks `appVersion`.
+A separate read-only job, with a fresh checkout and no npm dependencies, runs
+`scripts/package-chart.sh` to build a reproducible archive (times come from the
+tag's commit), rejecting untracked or ignored chart files. The publishing job
+downloads that same-run artifact,
+checks its SHA-256 against the build job's output, and runs
+`scripts/publish-chart.sh`, which refuses unless the checkout is
 the tag, the tag is on `main`, and the chart version and manifest agree. It
-refuses to overwrite an existing version, packages reproducibly (times come
-from the tag's commit), pushes to `oci://ghcr.io/browserless/charts/browserless`,
+checks the archive's name and version, refuses to overwrite an existing version,
+and pushes the prepared bytes to `oci://ghcr.io/browserless/charts/browserless`
+without rebuilding. It restores the archive's timestamp after artifact download
 and pulls the chart back to compare bytes and digest. The job then records a
 signed SLSA provenance attestation for the pushed manifest digest and verifies
 it.
@@ -331,17 +342,16 @@ helm upgrade --install browserless "$CHART@$DIGEST" \
   without them instead of falling back to `GITHUB_TOKEN`, whose pull requests
   and releases would trigger no workflows. Code that runs in that job on `main`
   can read the key, so the `main` ruleset decides who controls it.
-- A `chart-release` environment with required reviewers, without administrator
-  bypass, limited to `browserless-v*` tags. It is a single-person gate: the App
-  starts the deployment, so preventing self-review does not stop whoever merged
-  the release pull request from approving its publication.
+- A `chart-release` environment limited to `browserless-v*` tags, with no
+  required reviewers. Publication is automatic after Release Please creates
+  the release and the separate read-only test and package jobs succeed.
 - Tag rulesets for `browserless-v*`: only the release App may create these tags,
   and nobody may update or delete them.
 - A `main` ruleset requiring pull requests with one approving review and
   approval of the most recent push, the GitHub Actions checks `static` and
   `kind`, squash merging only, and no force pushes or deletion. `kind` fails
-  unless every `e2e` job passed, so the required checks stay the same when the
-  tested Kubernetes versions change.
+  unless `static`, `lockfile`, `zizmor`, `actionlint`, and every `e2e` job passed,
+  so the required checks stay the same when the tested Kubernetes versions change.
 - Workflow `GITHUB_TOKEN` permissions default to read, GitHub Actions cannot
   approve pull requests, and workflows from all outside contributors need
   approval.
@@ -351,9 +361,9 @@ also releases with. Each token `release-please.yml` creates is limited to this
 repository and three permissions, but the App's keys are not: any of its keys,
 wherever stored, can create tokens for every repository the App is installed on
 with all its permissions, including Actions, secrets and environments, and
-creating `browserless-v*` tags here. The App cannot change rulesets, and the
-`chart-release` reviewers still decide what is published. After the first
-publish, make the GHCR package public.
+creating `browserless-v*` tags here. The App cannot change rulesets; the reviewed
+main branch and immutable release tags control automatic publication. After the
+first publish, make the GHCR package public.
 
 ## Dependency updates
 
@@ -366,5 +376,6 @@ Dependabot's image pull requests and starts CI for that commit. The PR title
 check does not run again for it, which is why branch protection requires only
 `static` and `kind`. `@dependabot recreate` drops the sync commit, and the
 workflow adds it again. A node image that the pinned kind release cannot start
-fails CI until kind is updated. Not covered: the Node.js patch release, and the
-runner's ShellCheck, jq, OpenSSL and Docker; kubectl runs inside the kind node.
+fails CI until kind is updated. Every updater has an explicit three-day cooldown.
+Not covered: the Node.js patch release, shell-installed security tool pins and
+checksums, and the runner's jq, OpenSSL and Docker; kubectl runs inside the kind node.

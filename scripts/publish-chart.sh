@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Publishes one chart release to an OCI registry: scripts/publish-chart.sh <chart>-v<version>
+# Publishes a prepared release: scripts/publish-chart.sh <chart>-v<version> <archive>
 # publish.yml runs it for a published GitHub Release, from that release's tag.
 # It refuses to publish unless the checkout is exactly the tag, the tag is on
 # main, and Chart.yaml and the release manifest agree; it refuses to overwrite a
@@ -7,7 +7,7 @@
 # it byte for byte. It prints the pushed manifest digest and, under GitHub
 # Actions, adds it to the job summary and writes `name` and `digest` step
 # outputs for the provenance attestation. publish.yml's verify job has already
-# run the chart tests and checked appVersion.
+# run the chart tests, checked appVersion and built the archive without OIDC.
 #
 # Runs in the job that can publish and sign, so it uses no npm packages: only
 # Node built-ins, Helm, jq and curl. Environment: HELM
@@ -23,12 +23,14 @@ registry=${OCI_REGISTRY:-ghcr.io}
 namespace=${OCI_NAMESPACE:-browserless/charts}
 fail() { echo "publish-chart: $*" >&2; exit 1; }
 
-tag=${1:?usage: publish-chart.sh <chart>-v<version>}
+tag=${1:?usage: publish-chart.sh <chart>-v<version> <archive>}
+package=${2:?usage: publish-chart.sh <chart>-v<version> <archive>}
+[[ $tag =~ ^[a-z0-9][a-z0-9-]*-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "tag $tag is not <chart>-v<major>.<minor>.<patch>"
 chart=${tag%-v*}
 version=${tag##*-v}
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "tag $tag is not <chart>-v<major>.<minor>.<patch>"
 dir=$root/charts/$chart
 [ -f "$dir/Chart.yaml" ] || fail "no chart named $chart"
+[ -f "$package" ] && [ ! -L "$package" ] || fail "archive must be a regular file"
 
 head=$(git -C "$root" rev-parse HEAD)
 tagged=$(git -C "$root" rev-parse --verify --quiet "refs/tags/$tag^{commit}") || fail "tag $tag does not exist"
@@ -39,6 +41,9 @@ chart_version=$("$HELM" show chart "$dir" | sed -n 's/^version: //p')
 [ "$chart_version" = "$version" ] || fail "Chart.yaml version $chart_version does not match tag $tag"
 manifest_version=$(jq -r --arg p "charts/$chart" '.[$p] // empty' "$root/.release-please-manifest.json")
 [ "$manifest_version" = "$version" ] || fail "release manifest has '$manifest_version' for charts/$chart, tag is $tag"
+metadata=$("$HELM" show chart "$package")
+[ "$(sed -n 's/^name: //p' <<< "$metadata")" = "$chart" ] || fail "archive name does not match $chart"
+[ "$(sed -n 's/^version: //p' <<< "$metadata")" = "$version" ] || fail "archive version does not match $version"
 
 scheme=https plain=()
 if [ "${PLAIN_HTTP:-0}" = 1 ]; then scheme=http plain=(--plain-http); fi
@@ -76,15 +81,9 @@ esac
 
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
-# Times come from the tag's commit, so anyone can rebuild the same package and
-# OCI manifest from the tag: helm package takes file times from
-# SOURCE_DATE_EPOCH, and helm push takes the manifest's
-# org.opencontainers.image.created from the package file's modification time,
-# formatted in the local time zone.
+# Artifact download resets mtime. Restore it from the verified tag for the OCI
+# creation timestamp; never rebuild or modify the archive's bytes in this job.
 epoch=$(git -C "$root" log -1 --format=%ct "$tagged")
-SOURCE_DATE_EPOCH=$epoch "$HELM" package "$dir" --destination "$out" > /dev/null
-package=$out/$chart-$version.tgz
-[ -f "$package" ] || fail "helm package did not produce $chart-$version.tgz"
 node -e 'const t = Number(process.argv[1]); require("node:fs").utimesSync(process.argv[2], t, t)' "$epoch" "$package"
 pushed=$(TZ=UTC "$HELM" push "$package" "oci://$registry/$namespace" ${plain[@]+"${plain[@]}"}) ||
   fail "helm push failed"
