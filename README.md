@@ -241,10 +241,11 @@ UPGRADE_FROM=oci://ghcr.io/browserless/charts/browserless tests/e2e/kind.sh
 
 `npm test` runs the chart tests (schema, defaults and overrides, entrypoint
 guards, Kubernetes and runner coverage, lint, package contents and
-reproducibility, use as a dependency) and the tool installer's tests. Node runs
-the TypeScript directly; `npm run typecheck` checks it with `tsc`. npm packages
-are third-party code, so the isolated release packaging job and jobs that can
-push, publish, sign or read an environment's secrets install none and run only
+reproducibility, use as a dependency), the tool installer's tests and the Slack
+notification's tests. Node runs the TypeScript directly; `npm run typecheck`
+checks it with `tsc`. npm packages are third-party code, so the isolated release
+packaging job and jobs that can push, publish, sign or read an environment's
+secrets install none and run only
 scripts that import Node built-ins. A chart test checks the common ways this
 could regress; it is not a complete security analysis of the workflows.
 
@@ -306,7 +307,10 @@ and pushes the prepared bytes to `oci://ghcr.io/browserless/charts/browserless`
 without rebuilding. It restores the archive's timestamp after artifact download
 and pulls the chart back to compare bytes and digest. The job then records a
 signed SLSA provenance attestation for the pushed manifest digest and verifies
-it.
+it. Approving and merging the release pull request approves publication; the
+workflow asks for nothing else. Last, the job posts the release, its chart
+reference and digest to Slack. A failed post, including a missing webhook, does
+not fail the release; post it to Slack by hand.
 
 If `publish.yml` fails before its push, rerun it. If it fails during or after
 the push, or a rerun finds the version already exists, treat that version as
@@ -343,8 +347,9 @@ helm upgrade --install browserless "$CHART@$DIGEST" \
   and releases would trigger no workflows. Code that runs in that job on `main`
   can read the key, so the `main` ruleset decides who controls it.
 - A `chart-release` environment limited to `browserless-v*` tags, with no
-  required reviewers. Publication is automatic after Release Please creates
-  the release and the separate read-only test and package jobs succeed.
+  required reviewers, holding the optional `SLACK_RELEASES_WEBHOOK` secret.
+  Publication is automatic after Release Please creates the release and the
+  separate read-only test and package jobs succeed.
 - Tag rulesets for `browserless-v*`: only the release App may create these tags,
   and nobody may update or delete them.
 - A `main` ruleset requiring pull requests with one approving review and
