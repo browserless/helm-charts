@@ -1,0 +1,5 @@
+rules:
+  dependabot-cooldown:
+    config:
+      # Policy is three days for every updater; tests/chart.test.ts checks all entries.
+      days: 3
